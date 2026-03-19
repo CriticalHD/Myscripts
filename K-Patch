@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-echo "[*] ChromeOS Kernel Patch Script — Manual Edit Version"
+echo "[*] ChromeOS Kernel Patch — Fully Compatible Version"
 
 # -----------------------------
-# 1️⃣ Detect vbutil tool
+# Detect vbutil tool
 # -----------------------------
 if command -v vbutil_kernel >/dev/null 2>&1; then
     VBUTIL="vbutil_kernel"
@@ -18,18 +18,21 @@ fi
 echo "[*] Using tool: $VBUTIL"
 
 # -----------------------------
-# 2️⃣ Define kernel partition & workdir
+# Define kernel partition and workdir
 # -----------------------------
-KERN_PART="/dev/mmcblk0p2"   # Usually KERN-A
+KERN_PART="/dev/mmcblk0p2"   # KERN-A
 WORKDIR="/tmp/kernel_patch"
 mkdir -p $WORKDIR
 cd $WORKDIR
 
+# -----------------------------
+# Dump kernel
+# -----------------------------
 echo "[*] Dumping kernel partition..."
 sudo dd if=$KERN_PART of=kernel.bin bs=4M status=progress
 
 # -----------------------------
-# 3️⃣ Unpack kernel
+# Unpack kernel
 # -----------------------------
 UNPACK_DIR="$WORKDIR/unpacked"
 mkdir -p $UNPACK_DIR
@@ -37,16 +40,14 @@ mkdir -p $UNPACK_DIR
 KEYBLOCK="/usr/share/vboot/devkeys/kernel.keyblock"
 PRIVKEY="/usr/share/vboot/devkeys/kernel_data_key.vbprivk"
 
-echo "[*] Unpacking kernel (compatible with all vbutil_kernel versions)..."
-$VBUTIL --unpack $UNPACK_DIR \
+echo "[*] Unpacking kernel to $UNPACK_DIR..."
+$VBUTIL --unpack "$UNPACK_DIR" \
     --input kernel.bin \
-    --vblock $KEYBLOCK \
-    --signprivate $PRIVKEY
-
-echo "[*] Kernel unpacked to $UNPACK_DIR"
+    --vblock "$KEYBLOCK" \
+    --signprivate "$PRIVKEY"
 
 # -----------------------------
-# 4️⃣ Edit cmdline manually
+# Edit cmdline manually
 # -----------------------------
 CMDLINE_FILE="$UNPACK_DIR/cmdline"
 
@@ -59,7 +60,7 @@ echo "[*] Current kernel flags:"
 cat "$CMDLINE_FILE"
 
 echo ""
-echo "[*] Now edit flags manually. Recommended additions:"
+echo "[*] Add recommended flags manually:"
 echo "  cros_debug=1"
 echo "  disable_rootfs_verification"
 echo "  module.sig_enforce=0"
@@ -68,29 +69,27 @@ echo "  security=none"
 echo "  selinux=0"
 echo "  dm_verity.error_behavior=ignore"
 
-read -p "[*] Press ENTER to open cmdline file in nano editor..."
+read -p "[*] Press ENTER to edit cmdline..."
 nano "$CMDLINE_FILE"
 
-echo "[*] Edited flags saved."
+echo "[*] Flags saved."
 
 # -----------------------------
-# 5️⃣ Repack kernel
+# Repack kernel
 # -----------------------------
 echo "[*] Repacking kernel..."
 $VBUTIL --pack "$WORKDIR/new_kernel.bin" \
-    --keyblock $KEYBLOCK \
-    --signprivate $PRIVKEY \
+    --keyblock "$KEYBLOCK" \
+    --signprivate "$PRIVKEY" \
     --config "$CMDLINE_FILE" \
     --vmlinuz "$UNPACK_DIR/vmlinuz" \
     --arch x86
 
-echo "[*] Kernel repacked as $WORKDIR/new_kernel.bin"
-
 # -----------------------------
-# 6️⃣ Flash patched kernel
+# Flash patched kernel
 # -----------------------------
-echo "[*] Flashing patched kernel back to $KERN_PART"
+echo "[*] Flashing kernel back to $KERN_PART..."
 sudo dd if="$WORKDIR/new_kernel.bin" of=$KERN_PART bs=4M status=progress
 sync
 
-echo "[✔] Kernel patched successfully! Reboot to apply new flags."
+echo "[✔] Kernel patched successfully! Reboot now to apply flags."
