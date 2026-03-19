@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="v16.0.0"
+VERSION="v17.0.0"
 CYAN='\033[0;36m'; NC='\033[0m'; RED='\033[0;31m'; GREEN='\033[0;32m'; BLUE='\033[0;34m'
 
 echo -e "${CYAN}ChromeOS Kernel Patch Script — Version ${VERSION}${NC}"
@@ -38,7 +38,7 @@ DESCRIPTIONS=("Enable developer/debug mode" "Turn off rootfs verification" "Allo
 CMDLINE_FILE="$WORKDIR/cmdline.txt"
 touch "$CMDLINE_FILE"
 
-# Draw menu function
+# Draw menu
 show_menu() {
     echo ""
     echo -e "${CYAN}ChromeOS Kernel Patch Menu — Version ${VERSION}${NC}"
@@ -59,11 +59,12 @@ show_menu() {
 # Initial menu draw
 show_menu
 
-# VT2-safe menu loop
+# VT2-safe blocking menu loop
 while true; do
+    # Blocking read with very long timeout to prevent spamming
     echo -n "Choice: "
-    read -r choice
-    choice=$(echo "$choice" | tr -d '[:space:]')  # trim spaces
+    read -r -t 3600 choice
+    choice=$(echo "$choice" | tr -d '[:space:]')  # trim whitespace
 
     [[ -z "$choice" ]] && continue  # ignore empty input
 
