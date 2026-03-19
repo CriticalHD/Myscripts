@@ -4,7 +4,7 @@ set -e
 # -----------------------------
 # Version
 # -----------------------------
-VERSION="v4.0.0"
+VERSION="v5.0.0"
 CYAN='\033[0;36m'
 NC='\033[0m'
 echo -e "${CYAN}ChromeOS Kernel Patch Script — Version ${VERSION}${NC}"
