@@ -1,9 +1,21 @@
 #!/bin/bash
-
 set -e
 
-echo "[*] ChromeOS Kernel Patcher Starting..."
+echo "[*] ChromeOS Kernel Patcher v4 — Detecting tools..."
 
+# Detect tool
+if command -v vbutil_kernel >/dev/null 2>&1; then
+    VBUTIL="vbutil_kernel"
+elif command -v futility >/dev/null 2>&1; then
+    VBUTIL="futility vbutil_kernel"
+else
+    echo "[!] No vbutil_kernel or futility found"
+    exit 1
+fi
+
+echo "[*] Using: $VBUTIL"
+
+# Kernel partition (KERN-A by default)
 KERN_PART="/dev/mmcblk0p2"
 WORKDIR="/tmp/kernel_work"
 
@@ -11,23 +23,21 @@ mkdir -p $WORKDIR
 cd $WORKDIR
 
 echo "[*] Dumping kernel partition..."
-dd if=$KERN_PART of=kernel.bin
+sudo dd if=$KERN_PART of=kernel.bin
 
-echo "[*] Verifying & extracting kernel..."
-vbutil_kernel --verify kernel.bin --verbose > kernel_info.txt 2>&1
+echo "[*] Extracting kernel + config..."
+$VBUTIL --verify kernel.bin --verbose \
+    --dump_kernel_config=config.txt \
+    --dump_vmlinuz=vmlinuz.bin
 
-echo "[*] Extracting components..."
+echo "[*] Current kernel flags:"
+cat config.txt
 
-# Extract vmlinuz + config
-dump_kernel_config() {
-    strings kernel.bin | grep -A20 "cros_debug" > config.txt || true
-}
+# Prepare new cmdline
+cp config.txt new_cmdline.txt
 
-dump_kernel_config
+cat >> new_cmdline.txt <<EOF
 
-echo "[*] Creating new cmdline..."
-
-cat > new_cmdline.txt <<EOF
 cros_debug=1
 disable_rootfs_verification
 module.sig_enforce=0
@@ -37,32 +47,23 @@ selinux=0
 dm_verity.error_behavior=ignore
 EOF
 
-echo "[!] You can edit flags now: $WORKDIR/new_cmdline.txt"
-read -p "Press ENTER to continue..."
+echo "[!] Edit flags if needed: $WORKDIR/new_cmdline.txt"
+read -p "Press ENTER to continue with these flags..."
 
-echo "[*] Repacking kernel..."
-
-# NOTE: These files must exist on ChromeOS
+# Dev keys (must exist)
 KEYBLOCK="/usr/share/vboot/devkeys/kernel.keyblock"
 PRIVKEY="/usr/share/vboot/devkeys/kernel_data_key.vbprivk"
 
-if [ ! -f "$KEYBLOCK" ]; then
-    echo "[!] Missing keyblock!"
-    exit 1
-fi
+echo "[*] Repacking kernel..."
+$VBUTIL --pack new_kernel.bin \
+    --keyblock $KEYBLOCK \
+    --signprivate $PRIVKEY \
+    --config new_cmdline.txt \
+    --vmlinuz vmlinuz.bin \
+    --arch x86
 
-vbutil_kernel --pack new_kernel.bin \
-  --keyblock $KEYBLOCK \
-  --signprivate $PRIVKEY \
-  --config new_cmdline.txt \
-  --vmlinuz /boot/vmlinuz \
-  --arch x86
-
-echo "[*] Flashing patched kernel..."
-
-dd if=new_kernel.bin of=$KERN_PART
-
-echo "[*] Syncing..."
+echo "[*] Flashing patched kernel (KERN-A)..."
+sudo dd if=new_kernel.bin of=$KERN_PART
 sync
 
-echo "[✔] Done. Reboot and test."
+echo "[✔] Done! Reboot to apply new kernel flags."
