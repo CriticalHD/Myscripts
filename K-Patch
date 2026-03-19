@@ -4,7 +4,7 @@ set -e
 # -----------------------------
 # Version
 # -----------------------------
-VERSION="v11.0.0"
+VERSION="v11.1.0"
 CYAN='\033[0;36m'
 NC='\033[0m'
 RED='\033[0;31m'
@@ -69,30 +69,13 @@ show_menu() {
     echo -e "${CYAN}ChromeOS Kernel Patch Menu — Version ${VERSION}${NC}"
     echo "Toggle flags ON/OFF:"
     echo "-----------------------------------"
-    
-    # Precompute status strings
-    status0="OFF"; color0=$RED
-    [ "${FLAGS[0]}" -eq 1 ] && status0="ON" && color0=$GREEN
-    status1="OFF"; color1=$RED
-    [ "${FLAGS[1]}" -eq 1 ] && status1="ON" && color1=$GREEN
-    status2="OFF"; color2=$RED
-    [ "${FLAGS[2]}" -eq 1 ] && status2="ON" && color2=$GREEN
-    status3="OFF"; color3=$RED
-    [ "${FLAGS[3]}" -eq 1 ] && status3="ON" && color3=$GREEN
-    status4="OFF"; color4=$RED
-    [ "${FLAGS[4]}" -eq 1 ] && status4="ON" && color4=$GREEN
-    status5="OFF"; color5=$RED
-    [ "${FLAGS[5]}" -eq 1 ] && status5="ON" && color5=$GREEN
-    status6="OFF"; color6=$RED
-    [ "${FLAGS[6]}" -eq 1 ] && status6="ON" && color6=$GREEN
 
-    echo -e "${color0}1) [${status0}] ${NAMES[0]} - ${DESCRIPTIONS[0]}${NC}"
-    echo -e "${color1}2) [${status1}] ${NAMES[1]} - ${DESCRIPTIONS[1]}${NC}"
-    echo -e "${color2}3) [${status2}] ${NAMES[2]} - ${DESCRIPTIONS[2]}${NC}"
-    echo -e "${color3}4) [${status3}] ${NAMES[3]} - ${DESCRIPTIONS[3]}${NC}"
-    echo -e "${color4}5) [${status4}] ${NAMES[4]} - ${DESCRIPTIONS[4]}${NC}"
-    echo -e "${color5}6) [${status5}] ${NAMES[5]} - ${DESCRIPTIONS[5]}${NC}"
-    echo -e "${color6}7) [${status6}] ${NAMES[6]} - ${DESCRIPTIONS[6]}${NC}"
+    # Precompute status strings and colors
+    for i in {0..6}; do
+        status="OFF"; color=$RED
+        [ "${FLAGS[$i]}" -eq 1 ] && status="ON" && color=$GREEN
+        echo -e "${color}$((i+1))) [${status}] ${NAMES[$i]} - ${DESCRIPTIONS[$i]}${NC}"
+    done
 
     echo ""
     echo "m - Manual edit of cmdline"
@@ -107,7 +90,7 @@ show_menu() {
 # -----------------------------
 while true; do
     show_menu
-    read choice  # VT2-compatible
+    read choice  # plain VT2-compatible read
 
     case "$choice" in
         1) FLAGS[0]=$((1-FLAGS[0])) ;;
@@ -120,7 +103,7 @@ while true; do
         m) nano cmdline.txt ;;
         p) break ;;
         e) echo -e "${RED}[!] Exiting script.${NC}"; exit 0 ;;
-        *) echo -e "${RED}[!] Invalid option!${NC}"; sleep 1 ;;
+        # invalid option fallback removed
     esac
 done
 
