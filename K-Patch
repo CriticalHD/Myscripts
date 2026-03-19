@@ -4,7 +4,7 @@ set -e
 # -----------------------------
 # Version
 # -----------------------------
-VERSION="v2.0.0"
+VERSION="v3.0.0"
 CYAN='\033[0;36m'
 NC='\033[0m'
 echo -e "${CYAN}ChromeOS Kernel Patch Script — Version ${VERSION}${NC}"
@@ -48,39 +48,63 @@ echo -e "${BLUE}[*] Dumping kernel partition ($KERN_PART)...${NC}"
 sudo dd if=$KERN_PART of=kernel_A.bin bs=4M status=progress
 
 # -----------------------------
-# Prepare flags
+# Prepare flags with descriptions
 # -----------------------------
 declare -A FLAGS
+declare -A DESCRIPTIONS
+
 FLAGS[cros_debug]=0
+DESCRIPTIONS[cros_debug]="Enables ChromeOS developer debug mode"
+
 FLAGS[disable_rootfs_verification]=0
+DESCRIPTIONS[disable_rootfs_verification]="Disables verified boot checks on the root filesystem"
+
 FLAGS[module.sig_enforce]=0
+DESCRIPTIONS[module.sig_enforce]="Disables kernel module signature enforcement"
+
 FLAGS[lsm.module_locking]=0
+DESCRIPTIONS[lsm.module_locking]="Disables Linux Security Module kernel locking"
+
 FLAGS[security]=0
+DESCRIPTIONS[security]="Disables certain kernel security features (optional)"
+
 FLAGS[selinux]=0
+DESCRIPTIONS[selinux]="Disables SELinux enforcement in kernel"
+
 FLAGS[dm_verity.error_behavior]=0
+DESCRIPTIONS[dm_verity.error_behavior]="Changes behavior on dm-verity failures; 'ignore' prevents boot halt"
 
 # -----------------------------
-# Menu function
+# Numbered menu mapping
+# -----------------------------
+OPTIONS=(cros_debug disable_rootfs_verification module.sig_enforce lsm.module_locking security selinux dm_verity.error_behavior)
+
+# -----------------------------
+# Show menu
 # -----------------------------
 show_menu() {
     clear
     echo -e "${CYAN}ChromeOS Kernel Patch Menu — Version ${VERSION}${NC}"
     echo "Select flags to toggle ON/OFF:"
     echo "-----------------------------------"
-    for key in "${!FLAGS[@]}"; do
+    for i in "${!OPTIONS[@]}"; do
+        key="${OPTIONS[$i]}"
         status="${FLAGS[$key]}"
         if [ "$status" -eq 1 ]; then
-            echo -e "${GREEN}[ON ]${NC} $key"
+            color=$GREEN
+            stat_text="ON "
         else
-            echo -e "${RED}[OFF]${NC} $key"
+            color=$RED
+            stat_text="OFF"
         fi
+        echo -e "${color}$((i+1))) [${stat_text}]${NC} $key - ${DESCRIPTIONS[$key]}"
     done
     echo ""
     echo "m - Manual edit of cmdline"
     echo "p - Proceed with repack"
     echo "e - Exit without changes"
     echo "-----------------------------------"
-    echo -n "Choose flag to toggle (or option m/p/e): "
+    echo -n "Choose number or option (m/p/e): "
 }
 
 # -----------------------------
@@ -90,8 +114,10 @@ while true; do
     show_menu
     read -r choice
     case $choice in
-        cros_debug|disable_rootfs_verification|module.sig_enforce|lsm.module_locking|security|selinux|dm_verity.error_behavior)
-            FLAGS[$choice]=$((1-${FLAGS[$choice]}))
+        1|2|3|4|5|6|7)
+            index=$((choice-1))
+            key="${OPTIONS[$index]}"
+            FLAGS[$key]=$((1-${FLAGS[$key]}))
             ;;
         m)
             echo -e "${YELLOW}[*] Opening manual edit...${NC}"
@@ -106,7 +132,7 @@ while true; do
             exit 0
             ;;
         *)
-            echo -e "${RED}[!] Invalid option${NC}"
+            echo -e "${RED}[!] Invalid option, choose a number from 1-7, m, p, or e.${NC}"
             sleep 1
             ;;
     esac
@@ -118,9 +144,14 @@ done
 CMDLINE_FILE="$WORKDIR/cmdline.txt"
 > "$CMDLINE_FILE"
 
-for key in "${!FLAGS[@]}"; do
+for key in "${OPTIONS[@]}"; do
     if [ "${FLAGS[$key]}" -eq 1 ]; then
-        echo -n "$key " >> "$CMDLINE_FILE"
+        # dm_verity needs 'ignore' text
+        if [ "$key" == "dm_verity.error_behavior" ]; then
+            echo -n "dm_verity.error_behavior=ignore " >> "$CMDLINE_FILE"
+        else
+            echo -n "$key " >> "$CMDLINE_FILE"
+        fi
     fi
 done
 echo "" >> "$CMDLINE_FILE"
