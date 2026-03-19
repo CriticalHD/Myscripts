@@ -1,121 +1,119 @@
 #!/bin/bash
 # =============================================
 # VT2 libpci Installer Script
-# Version: 2.1 (PERMISSION + ERROR 126 FIX)
+# Version: 2.2 (Syntax-safe)
 # =============================================
 
-SCRIPT_VERSION="2.1"
+# Colors (safe)
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-# Colors
-RED="\033[0;31m"
-GREEN="\033[0;32m"
-YELLOW="\033[1;33m"
-BLUE="\033[0;34m"
-NC="\033[0m"
-
-echo -e "${BLUE}======================================${NC}"
-echo -e "${BLUE}VT2 libpci Installer${NC}"
-echo -e "${BLUE}Version: ${SCRIPT_VERSION}${NC}"
-echo -e "${BLUE}======================================${NC}"
+echo -e "$BLUE======================================$NC"
+echo -e "$BLUE VT2 libpci Installer (v2.2) $NC"
+echo -e "$BLUE======================================$NC"
 
 # -------------------------------
 # Install required tools
 # -------------------------------
-install_if_missing() {
-    local cmd=$1
-    local pkg=$2
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-        echo -e "${YELLOW}Installing $pkg...${NC}"
-        sudo crew install -y "$pkg" || echo -e "${RED}Failed to install $pkg (continuing)${NC}"
-    else
-        echo -e "${GREEN}$cmd OK${NC}"
-    fi
-}
+echo -e "$BLUE Checking tools... $NC"
 
-echo -e "${BLUE}Checking tools...${NC}"
-install_if_missing gcc gcc
-install_if_missing make make
-install_if_missing tar tar
-install_if_missing xz xz
-install_if_missing curl curl
+if ! command -v gcc >/dev/null 2>&1; then
+    echo -e "$YELLOW Installing gcc... $NC"
+    crew install -y gcc
+fi
+
+if ! command -v make >/dev/null 2>&1; then
+    echo -e "$YELLOW Installing make... $NC"
+    crew install -y make
+fi
+
+if ! command -v tar >/dev/null 2>&1; then
+    echo -e "$YELLOW Installing tar... $NC"
+    crew install -y tar
+fi
+
+if ! command -v xz >/dev/null 2>&1; then
+    echo -e "$YELLOW Installing xz... $NC"
+    crew install -y xz
+fi
+
+if ! command -v curl >/dev/null 2>&1; then
+    echo -e "$YELLOW Installing curl... $NC"
+    crew install -y curl
+fi
 
 # -------------------------------
 # Download pciutils
 # -------------------------------
-echo -e "${BLUE}Downloading pciutils...${NC}"
+echo -e "$BLUE Downloading pciutils... $NC"
+
 URL="https://www.kernel.org/pub/software/utils/pciutils/pciutils-3.14.0.tar.xz"
 
-if ! curl -f -sSL -o /tmp/pciutils.tar.xz "$URL"; then
-    echo -e "${RED}Download failed${NC}"
+curl -L -o /tmp/pciutils.tar.xz "$URL"
+
+if [ ! -f /tmp/pciutils.tar.xz ]; then
+    echo -e "$RED Download failed $NC"
     exit 1
 fi
 
-echo -e "${GREEN}Download OK${NC}"
+echo -e "$GREEN Download OK $NC"
 
 # -------------------------------
 # Extract
 # -------------------------------
-echo -e "${BLUE}Extracting...${NC}"
-cd /tmp || exit 1
+echo -e "$BLUE Extracting... $NC"
 
-tar -xJf pciutils.tar.xz || {
-    echo -e "${RED}Extraction failed${NC}"
-    exit 1
-}
+cd /tmp
+tar -xJf pciutils.tar.xz
 
-cd pciutils-3.14.0 || {
-    echo -e "${RED}Folder missing${NC}"
+if [ ! -d pciutils-3.14.0 ]; then
+    echo -e "$RED Extraction failed $NC"
     exit 1
-}
+fi
+
+cd pciutils-3.14.0
 
 # -------------------------------
-# FIX PERMISSIONS (important)
+# Fix permissions
 # -------------------------------
-echo -e "${BLUE}Fixing permissions...${NC}"
 chmod -R +x .
 
 # -------------------------------
 # Build
 # -------------------------------
-echo -e "${BLUE}Building libpci...${NC}"
+echo -e "$BLUE Building libpci... $NC"
 
-# VT2 sometimes blocks execution → force bash
-if make PREFIX=/usr/local CC=gcc; then
-    echo -e "${GREEN}Build OK${NC}"
-else
-    echo -e "${RED}Build failed (error 126 likely)${NC}"
-    echo -e "${YELLOW}Trying fallback build...${NC}"
-    
-    # fallback: force shell execution
-    make PREFIX=/usr/local SHELL=/bin/bash CC=gcc || {
-        echo -e "${RED}Fallback build failed${NC}"
-        exit 1
-    }
-}
+make PREFIX=/usr/local
 
-# -------------------------------
-# Install (needs sudo)
-# -------------------------------
-echo -e "${BLUE}Installing...${NC}"
-if sudo make PREFIX=/usr/local install; then
-    echo -e "${GREEN}Install OK${NC}"
-else
-    echo -e "${RED}Install failed${NC}"
+if [ $? -ne 0 ]; then
+    echo -e "$RED Build failed $NC"
     exit 1
 fi
 
+echo -e "$GREEN Build OK $NC"
+
 # -------------------------------
-# Final environment fix
+# Install (sudo required)
 # -------------------------------
-echo -e "${BLUE}Setting environment...${NC}"
-export CFLAGS="-I/usr/local/include"
-export LDFLAGS="-L/usr/local/lib"
+echo -e "$BLUE Installing... $NC"
+
+sudo make PREFIX=/usr/local install
+
+if [ $? -ne 0 ]; then
+    echo -e "$RED Install failed $NC"
+    exit 1
+fi
+
+echo -e "$GREEN Install OK $NC"
 
 # -------------------------------
 # Done
 # -------------------------------
-echo -e "${BLUE}======================================${NC}"
-echo -e "${GREEN}libpci installed successfully!${NC}"
-echo -e "${GREEN}/usr/local/include/pci${NC}"
-echo -e "${GREEN}/usr/local/lib/libpci.*${NC}"
-echo -e "${BLUE}======================================${NC}"
+echo -e "$BLUE======================================$NC"
+echo -e "$GREEN libpci installed successfully! $NC"
+echo -e "$GREEN /usr/local/include/pci $NC"
+echo -e "$GREEN /usr/local/lib/libpci.* $NC"
+echo -e "$BLUE======================================$NC"
