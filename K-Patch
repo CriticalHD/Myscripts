@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="v15.0.0"
+VERSION="v16.0.0"
 CYAN='\033[0;36m'; NC='\033[0m'; RED='\033[0;31m'; GREEN='\033[0;32m'; BLUE='\033[0;34m'
 
 echo -e "${CYAN}ChromeOS Kernel Patch Script — Version ${VERSION}${NC}"
@@ -38,7 +38,7 @@ DESCRIPTIONS=("Enable developer/debug mode" "Turn off rootfs verification" "Allo
 CMDLINE_FILE="$WORKDIR/cmdline.txt"
 touch "$CMDLINE_FILE"
 
-# Draw menu
+# Draw menu function
 show_menu() {
     echo ""
     echo -e "${CYAN}ChromeOS Kernel Patch Menu — Version ${VERSION}${NC}"
@@ -56,16 +56,16 @@ show_menu() {
     echo "-----------------------------------"
 }
 
+# Initial menu draw
+show_menu
+
 # VT2-safe menu loop
-show_menu  # initial draw
 while true; do
     echo -n "Choice: "
     read -r choice
     choice=$(echo "$choice" | tr -d '[:space:]')  # trim spaces
 
-    if [[ -z "$choice" ]]; then
-        continue
-    fi
+    [[ -z "$choice" ]] && continue  # ignore empty input
 
     changed=0
     case "$choice" in
@@ -82,10 +82,8 @@ while true; do
         *) continue ;;
     esac
 
-    # Only redraw menu if a valid change happened
-    if [[ $changed -eq 1 ]]; then
-        show_menu
-    fi
+    # Redraw menu only if something changed
+    [[ $changed -eq 1 ]] && show_menu
 done
 
 # Generate cmdline.txt
