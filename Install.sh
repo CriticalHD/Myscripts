@@ -1,14 +1,14 @@
 #!/bin/bash
 # =============================================
 # VT2 libpci Installer Script
-# Version: 1.1
+# Version: 1.2
 # =============================================
 
-set -e
+SCRIPT_VERSION="1.2"
 
-SCRIPT_VERSION="1.1"
-
-# Color codes
+# -------------------------------
+# Colors
+# -------------------------------
 RED="\033[0;31m"
 GREEN="\033[0;32m"
 YELLOW="\033[1;33m"
@@ -20,17 +20,21 @@ echo -e "${BLUE}VT2 libpci Installer${NC}"
 echo -e "${BLUE}Script Version: ${SCRIPT_VERSION}${NC}"
 echo -e "${BLUE}======================================${NC}"
 
-# Helper: install package if missing
+# -------------------------------
+# Dependency check and install
+# -------------------------------
 install_if_missing() {
     local cmd=$1
     local pkg=$2
     if ! command -v "$cmd" >/dev/null 2>&1; then
         echo -e "${YELLOW}$cmd not found. Installing $pkg via Chromebrew...${NC}"
         if ! crew install "$pkg"; then
-            echo -e "${RED}WARNING: Failed to install $pkg. Continuing anyway.${NC}"
+            echo -e "${RED}WARNING: Failed to install $pkg. The script will continue, but you may need to fix it manually.${NC}"
+        else
+            echo -e "${GREEN}$pkg installed successfully.${NC}"
         fi
     else
-        echo -e "${GREEN}$cmd is already installed.${NC}"
+        echo -e "${GREEN}$cmd already installed.${NC}"
     fi
 }
 
@@ -40,24 +44,38 @@ install_if_missing g++ g++
 install_if_missing make make
 install_if_missing pkg-config pkg-config
 
+# -------------------------------
+# Download pciutils
+# -------------------------------
 echo -e "${BLUE}Step 2: Downloading pciutils (for libpci)...${NC}"
 PCIUTILS_URL="https://mj.ucw.cz/sw/pciutils/pciutils-3.14.tar.gz"
-if ! curl -f -L -sSL --retry 3 -o /tmp/pciutils.tar.gz "$PCIUTILS_URL"; then
-    echo -e "${RED}WARNING: Download failed after 3 retries. You may need to check network or download manually.${NC}"
+
+download_success=false
+for i in {1..3}; do
+    echo -e "${YELLOW}Attempt $i: downloading...${NC}"
+    if curl -f -sSL -o /tmp/pciutils.tar.gz "$PCIUTILS_URL"; then
+        download_success=true
+        break
+    else
+        echo -e "${RED}Download failed, retrying...${NC}"
+        sleep 2
+    fi
+done
+
+if [ "$download_success" = false ]; then
+    echo -e "${RED}ERROR: Failed to download pciutils after 3 attempts. Exiting.${NC}"
+    exit 1
 else
     echo -e "${GREEN}pciutils downloaded successfully.${NC}"
 fi
 
-# Only continue if file exists
-if [ ! -s /tmp/pciutils.tar.gz ]; then
-    echo -e "${RED}ERROR: pciutils tarball missing. Exiting.${NC}"
-    exit 1
-fi
-
+# -------------------------------
+# Extract and compile pciutils
+# -------------------------------
 echo -e "${BLUE}Step 3: Extracting pciutils...${NC}"
 cd /tmp
-tar -xzf pciutils.tar.gz
-cd pciutils-3.14
+tar -xzf pciutils.tar.gz || { echo -e "${RED}ERROR: Failed to extract pciutils.${NC}"; exit 1; }
+cd pciutils-3.14 || { echo -e "${RED}ERROR: pciutils folder missing.${NC}"; exit 1; }
 
 echo -e "${BLUE}Step 4: Setting compiler/linker paths...${NC}"
 export CFLAGS="-I/usr/local/include"
@@ -68,9 +86,12 @@ echo -e "${BLUE}Step 5: Configuring, compiling, and installing libpci...${NC}"
 if ./configure --prefix=/usr/local && make && sudo make install; then
     echo -e "${GREEN}libpci installed successfully!${NC}"
 else
-    echo -e "${RED}WARNING: Failed to build/install libpci. You may need to check errors manually.${NC}"
+    echo -e "${RED}WARNING: Failed to build/install libpci. Check errors above.${NC}"
 fi
 
+# -------------------------------
+# Completion
+# -------------------------------
 echo -e "${BLUE}======================================${NC}"
 echo -e "${GREEN}libpci Headers: /usr/local/include/pci${NC}"
 echo -e "${GREEN}libpci Libraries: /usr/local/lib/libpci.*${NC}"
