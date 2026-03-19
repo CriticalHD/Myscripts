@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================
 # VT2 libpci Installer Script
-# Version: 1.3
+# Version: 1.4
 # =============================================
 
-SCRIPT_VERSION="1.3"
+SCRIPT_VERSION="1.4"
 
 # -------------------------------
 # Colors
@@ -28,13 +28,13 @@ install_if_missing() {
     local pkg=$2
     if ! command -v "$cmd" >/dev/null 2>&1; then
         echo -e "${YELLOW}$cmd not found. Installing $pkg via Chromebrew...${NC}"
-        if ! crew install "$pkg"; then
-            echo -e "${RED}WARNING: Failed to install $pkg. Continuing anyway.${NC}"
+        if ! crew install -y "$pkg"; then
+            echo -e "${RED}WARNING: Failed to install $pkg. The script will continue, but you may need to fix it manually.${NC}"
         else
             echo -e "${GREEN}$pkg installed successfully.${NC}"
         fi
     else
-        echo -e "${GREEN}$cmd is already installed.${NC}"
+        echo -e "${GREEN}$cmd already installed.${NC}"
     fi
 }
 
@@ -48,6 +48,8 @@ install_if_missing make make
 install_if_missing pkg-config pkg-config
 install_if_missing tar tar
 install_if_missing xz xz
+install_if_missing curl curl
+install_if_missing sudo sudo
 
 # -------------------------------
 # Step 2: Download pciutils
