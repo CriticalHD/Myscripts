@@ -101,22 +101,20 @@ show_menu() {
 # -----------------------------
 while true; do
     show_menu
-    read -p "Choose number or option (m/p/e): " choice
-    choice=$(echo "$choice" | tr -d '[:space:]')  # trim spaces
+    read -p "Choice: " choice
 
-    # Skip empty input
-    if [ -z "$choice" ]; then
-        continue
-    fi
-
-    case $choice in
-        1|2|3|4|5|6|7)
-            index=$((choice-1))
-            FLAGS[$index]=$((1-${FLAGS[$index]}))
-            ;;
-        m)
+    case "$choice" in
+        1) index=0 ;;
+        2) index=1 ;;
+        3) index=2 ;;
+        4) index=3 ;;
+        5) index=4 ;;
+        6) index=5 ;;
+        7) index=6 ;;
+        m) 
             echo -e "${YELLOW}[*] Opening manual edit...${NC}"
             nano cmdline.txt
+            continue
             ;;
         p)
             echo -e "${GREEN}[*] Proceeding with repack...${NC}"
@@ -129,8 +127,12 @@ while true; do
         *)
             echo -e "${RED}[!] Invalid option, choose 1-7, m, p, or e.${NC}"
             sleep 1
+            continue
             ;;
     esac
+
+    # Toggle the selected flag
+    FLAGS[$index]=$((1-${FLAGS[$index]}))
 done
 
 # -----------------------------
