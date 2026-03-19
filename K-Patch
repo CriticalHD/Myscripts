@@ -4,7 +4,7 @@ set -e
 # -----------------------------
 # Version
 # -----------------------------
-VERSION="v1.0.0"
+VERSION="v2.0.0"
 CYAN='\033[0;36m'
 NC='\033[0m'
 echo -e "${CYAN}ChromeOS Kernel Patch Script — Version ${VERSION}${NC}"
@@ -48,12 +48,6 @@ echo -e "${BLUE}[*] Dumping kernel partition ($KERN_PART)...${NC}"
 sudo dd if=$KERN_PART of=kernel_A.bin bs=4M status=progress
 
 # -----------------------------
-# Extract vmlinuz
-# -----------------------------
-echo -e "${BLUE}[*] Extracting vmlinuz...${NC}"
-$VBUTIL --get-vmlinuz kernel_A.bin --outfile vmlinuz.bin
-
-# -----------------------------
 # Prepare flags
 # -----------------------------
 declare -A FLAGS
@@ -89,6 +83,9 @@ show_menu() {
     echo -n "Choose flag to toggle (or option m/p/e): "
 }
 
+# -----------------------------
+# Interactive loop
+# -----------------------------
 while true; do
     show_menu
     read -r choice
@@ -119,7 +116,7 @@ done
 # Generate cmdline.txt
 # -----------------------------
 CMDLINE_FILE="$WORKDIR/cmdline.txt"
-> "$CMDLINE_FILE" # empty file
+> "$CMDLINE_FILE"
 
 for key in "${!FLAGS[@]}"; do
     if [ "${FLAGS[$key]}" -eq 1 ]; then
@@ -134,11 +131,10 @@ cat "$CMDLINE_FILE"
 # -----------------------------
 # Repack kernel
 # -----------------------------
-echo -e "${BLUE}[*] Repacking kernel...${NC}"
-$VBUTIL --pack new_kernel.bin \
-    --vmlinuz vmlinuz.bin \
+echo -e "${BLUE}[*] Repacking kernel using --repack...${NC}"
+$VBUTIL --repack kernel_A.bin \
     --config "$CMDLINE_FILE" \
-    --arch x86 \
+    --outfile new_kernel.bin \
     --keyblock "$KEYBLOCK" \
     --signprivate "$PRIVKEY"
 
