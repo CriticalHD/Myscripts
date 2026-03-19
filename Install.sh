@@ -1,8 +1,10 @@
 #!/bin/bash
 # =============================================
 # VT2 libpci Installer Script
-# Version: 3.0 (Actually Works)
+# Version: 3.1
 # =============================================
+
+VERSION="3.1"
 
 # Colors
 RED='\033[0;31m'
@@ -12,21 +14,20 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "$BLUE======================================$NC"
-echo -e "$BLUE libpci Installer (VT2 FIXED) $NC"
+echo -e "$BLUE libpci Installer (VT2) $NC"
+echo -e "$BLUE Version: $VERSION $NC"
 echo -e "$BLUE======================================$NC"
 
 # -------------------------------
-# Create safe build dir (NOT /tmp)
+# Build directory (safe)
 # -------------------------------
 BUILD_DIR="$HOME/build_libpci"
-
-echo -e "$BLUE Using build dir: $BUILD_DIR $NC"
 
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR" || exit 1
 
 # -------------------------------
-# Install required tools
+# Tools
 # -------------------------------
 echo -e "$BLUE Checking tools... $NC"
 
@@ -40,7 +41,7 @@ for pkg in gcc make tar xz curl; do
 done
 
 # -------------------------------
-# Download pciutils
+# Download
 # -------------------------------
 echo -e "$BLUE Downloading pciutils... $NC"
 
@@ -53,34 +54,37 @@ if [ ! -f pciutils.tar.xz ]; then
     exit 1
 fi
 
-echo -e "$GREEN Download OK $NC"
-
 # -------------------------------
 # Extract
 # -------------------------------
 echo -e "$BLUE Extracting... $NC"
 
 tar -xJf pciutils.tar.xz
-
-cd pciutils-3.14.0 || {
-    echo -e "$RED Extraction failed $NC"
-    exit 1
-}
+cd pciutils-3.14.0 || exit 1
 
 # -------------------------------
-# Fix permissions
+# CRITICAL FIXES
 # -------------------------------
-chmod -R +x .
+
+echo -e "$BLUE Fixing permissions... $NC"
+chmod -R 755 .
+
+echo -e "$BLUE Forcing executable scripts... $NC"
+find . -type f -name "*.sh" -exec chmod +x {} \;
+
+# Disable problematic features
+echo -e "$BLUE Adjusting config (VT2 fix)... $NC"
+sed -i 's/HAVE_ZLIB=yes/HAVE_ZLIB=no/' lib/config.mk 2>/dev/null
 
 # -------------------------------
-# Build
+# Build (FORCED SAFE MODE)
 # -------------------------------
 echo -e "$BLUE Building libpci... $NC"
 
-make PREFIX=/usr/local
+make PREFIX=/usr/local CC=gcc HOSTCC=gcc ZLIB=no
 
 if [ $? -ne 0 ]; then
-    echo -e "$RED Build failed $NC"
+    echo -e "$RED Build failed (still blocked by VT2)$NC"
     exit 1
 fi
 
