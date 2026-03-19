@@ -1,0 +1,68 @@
+#!/bin/bash
+
+set -e
+
+echo "[*] ChromeOS Kernel Patcher Starting..."
+
+KERN_PART="/dev/mmcblk0p2"
+WORKDIR="/tmp/kernel_work"
+
+mkdir -p $WORKDIR
+cd $WORKDIR
+
+echo "[*] Dumping kernel partition..."
+dd if=$KERN_PART of=kernel.bin
+
+echo "[*] Verifying & extracting kernel..."
+vbutil_kernel --verify kernel.bin --verbose > kernel_info.txt 2>&1
+
+echo "[*] Extracting components..."
+
+# Extract vmlinuz + config
+dump_kernel_config() {
+    strings kernel.bin | grep -A20 "cros_debug" > config.txt || true
+}
+
+dump_kernel_config
+
+echo "[*] Creating new cmdline..."
+
+cat > new_cmdline.txt <<EOF
+cros_debug=1
+disable_rootfs_verification
+module.sig_enforce=0
+lsm.module_locking=0
+security=none
+selinux=0
+dm_verity.error_behavior=ignore
+EOF
+
+echo "[!] You can edit flags now: $WORKDIR/new_cmdline.txt"
+read -p "Press ENTER to continue..."
+
+echo "[*] Repacking kernel..."
+
+# NOTE: These files must exist on ChromeOS
+KEYBLOCK="/usr/share/vboot/devkeys/kernel.keyblock"
+PRIVKEY="/usr/share/vboot/devkeys/kernel_data_key.vbprivk"
+
+if [ ! -f "$KEYBLOCK" ]; then
+    echo "[!] Missing keyblock!"
+    exit 1
+fi
+
+vbutil_kernel --pack new_kernel.bin \
+  --keyblock $KEYBLOCK \
+  --signprivate $PRIVKEY \
+  --config new_cmdline.txt \
+  --vmlinuz /boot/vmlinuz \
+  --arch x86
+
+echo "[*] Flashing patched kernel..."
+
+dd if=new_kernel.bin of=$KERN_PART
+
+echo "[*] Syncing..."
+sync
+
+echo "[✔] Done. Reboot and test."
