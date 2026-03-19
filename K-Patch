@@ -4,7 +4,7 @@ set -e
 # -----------------------------
 # Version
 # -----------------------------
-VERSION="v3.0.0"
+VERSION="v4.0.0"
 CYAN='\033[0;36m'
 NC='\033[0m'
 echo -e "${CYAN}ChromeOS Kernel Patch Script — Version ${VERSION}${NC}"
@@ -112,7 +112,14 @@ show_menu() {
 # -----------------------------
 while true; do
     show_menu
-    read -r choice
+    read -p "Choose number or option (m/p/e): " choice
+    choice=$(echo "$choice" | tr -d '[:space:]')  # Remove spaces/tabs
+
+    # Skip empty input
+    if [ -z "$choice" ]; then
+        continue
+    fi
+
     case $choice in
         1|2|3|4|5|6|7)
             index=$((choice-1))
