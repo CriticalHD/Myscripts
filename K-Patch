@@ -4,7 +4,7 @@ set -e
 # -----------------------------
 # Version
 # -----------------------------
-VERSION="v9.0.0"
+VERSION="v10.0.0"
 CYAN='\033[0;36m'
 NC='\033[0m'
 RED='\033[0;31m'
@@ -49,7 +49,7 @@ sudo dd if=$KERN_PART of=kernel_A.bin bs=4M status=progress
 # -----------------------------
 FLAGS=(0 0 0 0 0 0 0)
 NAMES=( "cros_debug" "disable_rootfs_verification" "module.sig_enforce" "lsm.module_locking" "security" "selinux" "dm_verity.error_behavior" )
-DESCRIPTIONS=(
+DESCRIPTIONS=( 
     "Enable developer/debug mode"
     "Turn off rootfs verification"
     "Allow unsigned kernel modules"
@@ -67,14 +67,17 @@ show_menu() {
     echo -e "${CYAN}ChromeOS Kernel Patch Menu — Version ${VERSION}${NC}"
     echo "Toggle flags ON/OFF:"
     echo "-----------------------------------"
-    # Explicit numeric indices, no ${!ARRAY[@]} or seq
-    echo -e "${GREEN}1) [$( [ ${FLAGS[0]} -eq 1 ] && echo ON || echo OFF )] ${NAMES[0]} - ${DESCRIPTIONS[0]}${NC}"
-    echo -e "${GREEN}2) [$( [ ${FLAGS[1]} -eq 1 ] && echo ON || echo OFF )] ${NAMES[1]} - ${DESCRIPTIONS[1]}${NC}"
-    echo -e "${GREEN}3) [$( [ ${FLAGS[2]} -eq 1 ] && echo ON || echo OFF )] ${NAMES[2]} - ${DESCRIPTIONS[2]}${NC}"
-    echo -e "${GREEN}4) [$( [ ${FLAGS[3]} -eq 1 ] && echo ON || echo OFF )] ${NAMES[3]} - ${DESCRIPTIONS[3]}${NC}"
-    echo -e "${GREEN}5) [$( [ ${FLAGS[4]} -eq 1 ] && echo ON || echo OFF )] ${NAMES[4]} - ${DESCRIPTIONS[4]}${NC}"
-    echo -e "${GREEN}6) [$( [ ${FLAGS[5]} -eq 1 ] && echo ON || echo OFF )] ${NAMES[5]} - ${DESCRIPTIONS[5]}${NC}"
-    echo -e "${GREEN}7) [$( [ ${FLAGS[6]} -eq 1 ] && echo ON || echo OFF )] ${NAMES[6]} - ${DESCRIPTIONS[6]}${NC}"
+    # Explicit indices and computed color/status
+    for i in {0..6}; do
+        if [ "${FLAGS[$i]}" -eq 1 ]; then
+            color=$GREEN
+            stat="ON "
+        else
+            color=$RED
+            stat="OFF"
+        fi
+        echo -e "${color}$((i+1))) [${stat}] ${NAMES[$i]} - ${DESCRIPTIONS[$i]}${NC}"
+    done
     echo ""
     echo "m - Manual edit of cmdline"
     echo "p - Proceed with repack"
@@ -88,7 +91,7 @@ show_menu() {
 # -----------------------------
 while true; do
     show_menu
-    read choice  # plain read, VT2-compatible
+    read choice  # plain read for VT2
 
     case "$choice" in
         1) FLAGS[0]=$((1-FLAGS[0])) ;;
