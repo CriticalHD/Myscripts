@@ -1,42 +1,152 @@
 #!/bin/bash
-
-echo "v1"
-
 set -e
 
-WORKDIR="/tmp/kernel_patch"
-mkdir -p $WORKDIR
-cd $WORKDIR
+# -----------------------------
+# Version
+# -----------------------------
+VERSION="v1.0.0"
+CYAN='\033[0;36m'
+NC='\033[0m'
+echo -e "${CYAN}ChromeOS Kernel Patch Script — Version ${VERSION}${NC}"
 
-KERN_PART="/dev/mmcblk0p2"
+# -----------------------------
+# Color definitions
+# -----------------------------
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+
+# -----------------------------
+# Paths and partitions
+# -----------------------------
+WORKDIR="/tmp/kernel_patch"
+mkdir -p "$WORKDIR"
+cd "$WORKDIR"
+
+KERN_PART="/dev/mmcblk0p2"  # Default KERN-A
 KEYBLOCK="/usr/share/vboot/devkeys/kernel.keyblock"
 PRIVKEY="/usr/share/vboot/devkeys/kernel_data_key.vbprivk"
 
-echo "[*] Dumping kernel partition..."
+# -----------------------------
+# Detect vbutil tool
+# -----------------------------
+if command -v vbutil_kernel >/dev/null 2>&1; then
+    VBUTIL="vbutil_kernel"
+elif command -v futility >/dev/null 2>&1; then
+    VBUTIL="futility vbutil_kernel"
+else
+    echo -e "${RED}[!] No vbutil_kernel or futility found!${NC}"
+    exit 1
+fi
+echo -e "${GREEN}[*] Using tool: $VBUTIL${NC}"
+
+# -----------------------------
+# Dump kernel partition
+# -----------------------------
+echo -e "${BLUE}[*] Dumping kernel partition ($KERN_PART)...${NC}"
 sudo dd if=$KERN_PART of=kernel_A.bin bs=4M status=progress
 
-echo "[*] Extracting vmlinuz..."
-vbutil_kernel --get-vmlinuz kernel_A.bin --outfile vmlinuz.bin
+# -----------------------------
+# Extract vmlinuz
+# -----------------------------
+echo -e "${BLUE}[*] Extracting vmlinuz...${NC}"
+$VBUTIL --get-vmlinuz kernel_A.bin --outfile vmlinuz.bin
 
-echo "[*] Prepare cmdline file"
-CMDLINE="$WORKDIR/cmdline.txt"
+# -----------------------------
+# Prepare flags
+# -----------------------------
+declare -A FLAGS
+FLAGS[cros_debug]=0
+FLAGS[disable_rootfs_verification]=0
+FLAGS[module.sig_enforce]=0
+FLAGS[lsm.module_locking]=0
+FLAGS[security]=0
+FLAGS[selinux]=0
+FLAGS[dm_verity.error_behavior]=0
 
-echo "# Add your kernel flags below" > $CMDLINE
-echo "cros_debug=1 disable_rootfs_verification module.sig_enforce=0 lsm.module_locking=0 security=none selinux=0 dm_verity.error_behavior=ignore" >> $CMDLINE
+# -----------------------------
+# Menu function
+# -----------------------------
+show_menu() {
+    clear
+    echo -e "${CYAN}ChromeOS Kernel Patch Menu — Version ${VERSION}${NC}"
+    echo "Select flags to toggle ON/OFF:"
+    echo "-----------------------------------"
+    for key in "${!FLAGS[@]}"; do
+        status="${FLAGS[$key]}"
+        if [ "$status" -eq 1 ]; then
+            echo -e "${GREEN}[ON ]${NC} $key"
+        else
+            echo -e "${RED}[OFF]${NC} $key"
+        fi
+    done
+    echo ""
+    echo "m - Manual edit of cmdline"
+    echo "p - Proceed with repack"
+    echo "e - Exit without changes"
+    echo "-----------------------------------"
+    echo -n "Choose flag to toggle (or option m/p/e): "
+}
 
-echo "[*] Edit cmdline manually if needed:"
-nano $CMDLINE
+while true; do
+    show_menu
+    read -r choice
+    case $choice in
+        cros_debug|disable_rootfs_verification|module.sig_enforce|lsm.module_locking|security|selinux|dm_verity.error_behavior)
+            FLAGS[$choice]=$((1-${FLAGS[$choice]}))
+            ;;
+        m)
+            echo -e "${YELLOW}[*] Opening manual edit...${NC}"
+            nano cmdline.txt
+            ;;
+        p)
+            echo -e "${GREEN}[*] Proceeding with repack...${NC}"
+            break
+            ;;
+        e)
+            echo -e "${RED}[!] Exiting script.${NC}"
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}[!] Invalid option${NC}"
+            sleep 1
+            ;;
+    esac
+done
 
-echo "[*] Repacking kernel..."
-vbutil_kernel --pack new_kernel.bin \
+# -----------------------------
+# Generate cmdline.txt
+# -----------------------------
+CMDLINE_FILE="$WORKDIR/cmdline.txt"
+> "$CMDLINE_FILE" # empty file
+
+for key in "${!FLAGS[@]}"; do
+    if [ "${FLAGS[$key]}" -eq 1 ]; then
+        echo -n "$key " >> "$CMDLINE_FILE"
+    fi
+done
+echo "" >> "$CMDLINE_FILE"
+
+echo -e "${GREEN}[*] Final cmdline:${NC}"
+cat "$CMDLINE_FILE"
+
+# -----------------------------
+# Repack kernel
+# -----------------------------
+echo -e "${BLUE}[*] Repacking kernel...${NC}"
+$VBUTIL --pack new_kernel.bin \
     --vmlinuz vmlinuz.bin \
-    --config $CMDLINE \
+    --config "$CMDLINE_FILE" \
     --arch x86 \
-    --keyblock $KEYBLOCK \
-    --signprivate $PRIVKEY
+    --keyblock "$KEYBLOCK" \
+    --signprivate "$PRIVKEY"
 
-echo "[*] Flashing new kernel..."
+# -----------------------------
+# Flash kernel
+# -----------------------------
+echo -e "${BLUE}[*] Flashing new kernel to $KERN_PART...${NC}"
 sudo dd if=new_kernel.bin of=$KERN_PART bs=4M status=progress
 sync
 
-echo "[✔] Done! Reboot to apply flags."
+echo -e "${GREEN}[✔] Kernel patched successfully! Reboot to apply changes.${NC}"
