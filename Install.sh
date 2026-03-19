@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================
 # VT2 libpci Installer Script
-# Version: 2.0 (FIXED BUILD SYSTEM)
+# Version: 2.1 (PERMISSION + ERROR 126 FIX)
 # =============================================
 
-SCRIPT_VERSION="2.0"
+SCRIPT_VERSION="2.1"
 
 # Colors
 RED="\033[0;31m"
@@ -18,13 +18,15 @@ echo -e "${BLUE}VT2 libpci Installer${NC}"
 echo -e "${BLUE}Version: ${SCRIPT_VERSION}${NC}"
 echo -e "${BLUE}======================================${NC}"
 
-# Install required tools (non-interactive)
+# -------------------------------
+# Install required tools
+# -------------------------------
 install_if_missing() {
     local cmd=$1
     local pkg=$2
     if ! command -v "$cmd" >/dev/null 2>&1; then
         echo -e "${YELLOW}Installing $pkg...${NC}"
-        crew install -y "$pkg" || echo -e "${RED}Failed to install $pkg (continuing)${NC}"
+        sudo crew install -y "$pkg" || echo -e "${RED}Failed to install $pkg (continuing)${NC}"
     else
         echo -e "${GREEN}$cmd OK${NC}"
     fi
@@ -37,7 +39,9 @@ install_if_missing tar tar
 install_if_missing xz xz
 install_if_missing curl curl
 
+# -------------------------------
 # Download pciutils
+# -------------------------------
 echo -e "${BLUE}Downloading pciutils...${NC}"
 URL="https://www.kernel.org/pub/software/utils/pciutils/pciutils-3.14.0.tar.xz"
 
@@ -48,7 +52,9 @@ fi
 
 echo -e "${GREEN}Download OK${NC}"
 
+# -------------------------------
 # Extract
+# -------------------------------
 echo -e "${BLUE}Extracting...${NC}"
 cd /tmp || exit 1
 
@@ -62,17 +68,34 @@ cd pciutils-3.14.0 || {
     exit 1
 }
 
-# Build (CORRECT WAY)
+# -------------------------------
+# FIX PERMISSIONS (important)
+# -------------------------------
+echo -e "${BLUE}Fixing permissions...${NC}"
+chmod -R +x .
+
+# -------------------------------
+# Build
+# -------------------------------
 echo -e "${BLUE}Building libpci...${NC}"
 
-if make PREFIX=/usr/local; then
+# VT2 sometimes blocks execution → force bash
+if make PREFIX=/usr/local CC=gcc; then
     echo -e "${GREEN}Build OK${NC}"
 else
-    echo -e "${RED}Build failed${NC}"
-    exit 1
-fi
+    echo -e "${RED}Build failed (error 126 likely)${NC}"
+    echo -e "${YELLOW}Trying fallback build...${NC}"
+    
+    # fallback: force shell execution
+    make PREFIX=/usr/local SHELL=/bin/bash CC=gcc || {
+        echo -e "${RED}Fallback build failed${NC}"
+        exit 1
+    }
+}
 
-# Install
+# -------------------------------
+# Install (needs sudo)
+# -------------------------------
 echo -e "${BLUE}Installing...${NC}"
 if sudo make PREFIX=/usr/local install; then
     echo -e "${GREEN}Install OK${NC}"
@@ -81,7 +104,16 @@ else
     exit 1
 fi
 
+# -------------------------------
+# Final environment fix
+# -------------------------------
+echo -e "${BLUE}Setting environment...${NC}"
+export CFLAGS="-I/usr/local/include"
+export LDFLAGS="-L/usr/local/lib"
+
+# -------------------------------
 # Done
+# -------------------------------
 echo -e "${BLUE}======================================${NC}"
 echo -e "${GREEN}libpci installed successfully!${NC}"
 echo -e "${GREEN}/usr/local/include/pci${NC}"
