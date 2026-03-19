@@ -4,7 +4,7 @@ set -e
 # -----------------------------
 # Version
 # -----------------------------
-VERSION="v11.1.0"
+VERSION="v12.0.0"
 CYAN='\033[0;36m'
 NC='\033[0m'
 RED='\033[0;31m'
@@ -70,7 +70,6 @@ show_menu() {
     echo "Toggle flags ON/OFF:"
     echo "-----------------------------------"
 
-    # Precompute status strings and colors
     for i in {0..6}; do
         status="OFF"; color=$RED
         [ "${FLAGS[$i]}" -eq 1 ] && status="ON" && color=$GREEN
@@ -86,11 +85,12 @@ show_menu() {
 }
 
 # -----------------------------
-# Interactive menu loop
+# Interactive menu loop using read -n1 (VT2 compatible)
 # -----------------------------
 while true; do
     show_menu
-    read choice  # plain VT2-compatible read
+    read -n1 choice  # read a single character (works in VT2)
+    echo ""  # new line after input
 
     case "$choice" in
         1) FLAGS[0]=$((1-FLAGS[0])) ;;
@@ -103,7 +103,7 @@ while true; do
         m) nano cmdline.txt ;;
         p) break ;;
         e) echo -e "${RED}[!] Exiting script.${NC}"; exit 0 ;;
-        # invalid option fallback removed
+        # all other keys just refresh menu silently
     esac
 done
 
