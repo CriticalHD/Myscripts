@@ -22,27 +22,22 @@ PRIVKEY="/usr/share/vboot/devkeys/kernel_data_key.vbprivk"
 DEV_FW_SCRIPT="/usr/share/vboot/bin/make_dev_firmware.sh"
 DEV_FW_BIN="/usr/share/vboot/dev_firmware.bin"
 
-# -----------------------------
-# Check dev firmware
-# -----------------------------
 if [ ! -f "$DEV_FW_BIN" ]; then
     echo -e "${YELLOW}[!] Dev firmware not installed${NC}"
     if [ -f "$DEV_FW_SCRIPT" ]; then
         echo -e "${BLUE}[*] Installing dev firmware...${NC}"
         sudo bash "$DEV_FW_SCRIPT" --no-modify-hwid --no-modify-gbb
-        echo -e "${GREEN}[✔] Dev firmware installed. REBOOT now.${NC}"
+        echo -e "${GREEN}Dev firmware installed. REBOOT now.${NC}"
         exit 0
     else
         echo -e "${RED}[!] make_dev_firmware.sh not found!${NC}"
         exit 1
     fi
 else
-    echo -e "${GREEN}[✔] Dev firmware already installed${NC}"
+    echo -e "${GREEN}Dev firmware already installed${NC}"
 fi
 
-# -----------------------------
-# Detect vbutil
-# -----------------------------
+
 if command -v vbutil_kernel >/dev/null 2>&1; then
     VBUTIL="vbutil_kernel"
 elif command -v futility >/dev/null 2>&1; then
@@ -52,9 +47,6 @@ else
     exit 1
 fi
 
-# -----------------------------
-# Choose patch mode
-# -----------------------------
 echo "Patch mode:"
 echo "1) Only active kernel slot (safe)"
 echo "2) Both kernels (riskier)"
@@ -64,9 +56,6 @@ if [[ "$PATCH_MODE" != "1" && "$PATCH_MODE" != "2" ]]; then
     exit 1
 fi
 
-# -----------------------------
-# Detect active slot
-# -----------------------------
 ACTIVE=$(cgpt show $DISK | grep -E "KERN-A|KERN-B" | sort -k4 -nr | head -n1)
 if echo "$ACTIVE" | grep -q "KERN-A"; then
     ACTIVE_PART=2
@@ -80,16 +69,10 @@ fi
 
 echo -e "${GREEN}[*] Active slot: $ACTIVE_NAME${NC}"
 
-# -----------------------------
-# Backup kernels
-# -----------------------------
 echo -e "${BLUE}[*] Backing up kernels...${NC}"
 sudo dd if=$KERN_A of=kernel_A_backup.bin bs=4M status=progress
 sudo dd if=$KERN_B of=kernel_B_backup.bin bs=4M status=progress
 
-# -----------------------------
-# Kernel flags menu
-# -----------------------------
 FLAGS=(0 0 0 0 0 0 0)
 NAMES=("cros_debug" "disable_rootfs_verification" "module.sig_enforce" "lsm.module_locking" "security" "selinux" "dm_verity.error_behavior")
 DESCRIPTIONS=(
@@ -135,9 +118,6 @@ while true; do
     esac
 done
 
-# -----------------------------
-# Generate cmdline
-# -----------------------------
 > "$CMDLINE_FILE"
 for i in {0..6}; do
     if [ "${FLAGS[$i]}" -eq 1 ]; then
@@ -154,9 +134,6 @@ echo "" >> "$CMDLINE_FILE"
 echo -e "${GREEN}[*] Cmdline:${NC}"
 cat "$CMDLINE_FILE"
 
-# -----------------------------
-# Repack function
-# -----------------------------
 repack_kernel() {
     IN_DEV=$1
     OUT_FILE=$2
@@ -175,9 +152,6 @@ repack_kernel() {
     fi
 }
 
-# -----------------------------
-# Patch kernels
-# -----------------------------
 if [ "$PATCH_MODE" == "1" ]; then
     # Only active
     repack_kernel "$ACTIVE_DEV" "new_kernel.bin"
@@ -197,4 +171,4 @@ else
     sudo cgpt add -i 4 -P 15 -T 1 -S 1 $DISK
 fi
 
-echo -e "${GREEN}[✔] Kernel patch complete. Reboot now.${NC}"
+echo -e "${GREEN}Kernel patch complete. Reboot now.${NC}"
