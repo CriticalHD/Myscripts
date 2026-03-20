@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-VERSION="v20.1.0"
+VERSION="v20.1.1"
 CYAN='\033[0;36m'; NC='\033[0m'; RED='\033[0;31m'; GREEN='\033[0;32m'; BLUE='\033[0;34m'; B='\033[1;31m'
 
 echo -e "${CYAN}ChromeOS K-Patch Script — Version ${VERSION}${NC}"
@@ -158,7 +158,7 @@ firmware_menu() {
 backup_firmware() {
     log_info() { printf "${GREEN}Info: %b${NC}\n" "$*"; }
     log_info "Backing up full firmware..."
-    flashrom -p host -r "/mnt/stateful_partition/backups/full_backup.bin"
+    flashrom -p internal -r "/mnt/stateful_partition/backups/full_backup.bin"
     log_info "Backup saved."
 }
 
