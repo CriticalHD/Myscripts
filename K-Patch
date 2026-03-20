@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="v18.0.0"
+VERSION="v19.0.0"
 CYAN='\033[0;36m'; NC='\033[0m'; RED='\033[0;31m'; GREEN='\033[0;32m'; BLUE='\033[0;34m'
 
 echo -e "${CYAN}ChromeOS Kernel Patch Script — Version ${VERSION}${NC}"
@@ -13,9 +13,6 @@ KERN_A="/dev/mmcblk0p2"
 KERN_B="/dev/mmcblk0p4"
 KEYBLOCK="/usr/share/vboot/devkeys/kernel.keyblock"
 PRIVKEY="/usr/share/vboot/devkeys/kernel_data_key.vbprivk"
-
-# Fix input: bind real terminal
-exec < /dev/tty
 
 # Detect vbutil
 if command -v vbutil_kernel >/dev/null 2>&1; then
@@ -55,13 +52,13 @@ show_menu() {
     echo ""
 }
 
-# Draw once
+# Draw menu
 show_menu
 
-# REAL working loop
+# SAFE VT2 LOOP
 while true; do
     printf "Choice: "
-    read -r choice
+    read -r choice < /dev/tty  # <-- KEY FIX
 
     choice=$(echo "$choice" | tr -d '[:space:]')
     [[ -z "$choice" ]] && continue
