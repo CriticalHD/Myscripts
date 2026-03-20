@@ -1,18 +1,36 @@
 #!/bin/bash
+set -e
 
-VERSION="v19.0.0"
-CYAN='\033[0;36m'; NC='\033[0m'; RED='\033[0;31m'; GREEN='\033[0;32m'; BLUE='\033[0;34m'
+VERSION="v36.6.0"
+AUTHOR="CriticalHD/neonnebula"
 
-echo -e "${CYAN}ChromeOS Kernel Patch Script — Version ${VERSION}${NC}"
+# =======================
+# Colors
+# =======================
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+RED='\033[0;31m'
+B='\033[1;31m'
+NC='\033[0m'
 
-WORKDIR="/tmp/kernel_patch"
+echo -e "${CYAN}ChromeOS K-Patch Script — Version ${VERSION} — ${AUTHOR}${NC}"
+
+WORKDIR="/tmp/kpatch_work"
 mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 
+# =======================
+# Device paths / keys
+# =======================
 KERN_A="/dev/mmcblk0p2"
 KERN_B="/dev/mmcblk0p4"
 KEYBLOCK="/usr/share/vboot/devkeys/kernel.keyblock"
 PRIVKEY="/usr/share/vboot/devkeys/kernel_data_key.vbprivk"
+
+SSD_SCRIPT="/usr/share/vboot/bin/make_dev_ssd.sh"
+FW_SCRIPT="/usr/share/vboot/bin/make_dev_firmware.sh"
 
 # Detect vbutil
 if command -v vbutil_kernel >/dev/null 2>&1; then
@@ -20,98 +38,162 @@ if command -v vbutil_kernel >/dev/null 2>&1; then
 elif command -v futility >/dev/null 2>&1; then
     VBUTIL="futility vbutil_kernel"
 else
-    echo -e "${RED}[!] No vbutil_kernel or futility found!${NC}"
+    echo -e "${RED}[!] vbutil_kernel not found!${NC}"
     exit 1
 fi
-echo -e "${GREEN}[*] Using tool: $VBUTIL${NC}"
 
-# Dump kernels
-echo -e "${BLUE}[*] Dumping KERN-A and KERN-B...${NC}"
-sudo dd if=$KERN_A of=kernel_A.bin bs=4M status=progress
-sudo dd if=$KERN_B of=kernel_B.bin bs=4M status=progress
-
-# Flags
-FLAGS=(0 0 0 0 0 0 0)
-NAMES=("cros_debug" "disable_rootfs_verification" "module.sig_enforce" "lsm.module_locking" "security" "selinux" "dm_verity.error_behavior")
-DESCRIPTIONS=("Enable developer/debug mode" "Turn off rootfs verification" "Allow unsigned kernel modules" "Disable module locking" "Disable extra kernel security checks" "Turn off SELinux enforcement" "Ignore dm-verity errors on boot")
-
+# =======================
+# Kernel options
+# =======================
+KERNEL_FLAGS=(0 0 0 0 0 0 0)
+KERNEL_NAMES=("cros_debug" "disable_rootfs_verification" "module.sig_enforce" "lsm.module_locking" "security" "selinux" "dm_verity.error_behavior")
+KERNEL_DESCRIPTIONS=("Enable developer/debug mode" "Turn off rootfs verification" "Allow unsigned modules (DANGEROUS)" "Disable module locking (DANGEROUS)" "Disable extra kernel security (DANGEROUS)" "Disable SELinux enforcement (DANGEROUS)" "Ignore dm-verity errors on boot")
+KERNEL_COLORS=("$GREEN" "$GREEN" "$YELLOW" "$YELLOW" "$YELLOW" "$YELLOW" "$GREEN")  # Safe = green, Dangerous = yellow
 CMDLINE_FILE="$WORKDIR/cmdline.txt"
-touch "$CMDLINE_FILE"
 
-show_menu() {
-    clear
-    echo -e "${CYAN}ChromeOS Kernel Patch Menu — Version ${VERSION}${NC}"
-    echo "-----------------------------------"
-    for i in {0..6}; do
-        status="OFF"; color=$RED
-        [ "${FLAGS[$i]}" -eq 1 ] && status="ON" && color=$GREEN
-        echo -e "${color}$((i+1))) [${status}] ${NAMES[$i]} - ${DESCRIPTIONS[$i]}${NC}"
+# =======================
+# Firmware options
+# =======================
+declare -A FW_OPTIONS=(
+  [1]="Apply Dev Firmware"
+  [2]="Enable Early Console"
+)
+declare -A FW_SELECTED
+
+# =======================
+# Kernel Menu
+# =======================
+kernel_menu() {
+    while true; do
+        clear
+        echo -e "${CYAN}ChromeOS Kernel Patch — Version ${VERSION} — ${AUTHOR}${NC}"
+        echo -e "${B}Legend:${NC} ${GREEN}Safe${NC} | ${YELLOW}Dangerous / Warning${NC}"
+        echo "------------------"
+        for i in "${!KERNEL_NAMES[@]}"; do
+            mark="[ ]"
+            [[ ${KERNEL_FLAGS[$i]} -eq 1 ]] && mark="[x]"
+            color="${KERNEL_COLORS[$i]}"
+            echo -e "$((i+1))) ${color}${KERNEL_NAMES[$i]}${NC} $mark - ${KERNEL_DESCRIPTIONS[$i]}"
+        done
+        echo "------------------"
+        echo -e "e = ${RED}exit${NC} | ENTER = continue"
+        echo -n "Choice: "
+        read -r choice < /dev/tty
+
+        choice=$(echo "$choice" | tr -d '[:space:]')
+        [[ "$choice" == "e" ]] && exit 0
+        [[ -z "$choice" ]] && break
+
+        case "$choice" in
+            1|2|3|4|5|6|7) idx=$((choice-1)); KERNEL_FLAGS[$idx]=$((1-KERNEL_FLAGS[$idx])) ;;
+        esac
     done
-    echo "-----------------------------------"
-    echo "m = edit cmdline | p = proceed | e = exit"
-    echo ""
+
+    # Build cmdline
+    > "$CMDLINE_FILE"
+    for i in "${!KERNEL_FLAGS[@]}"; do
+        if [[ ${KERNEL_FLAGS[$i]} -eq 1 ]]; then
+            key="${KERNEL_NAMES[$i]}"
+            [[ "$key" == "dm_verity.error_behavior" ]] \
+                && echo -n "dm_verity.error_behavior=ignore " >> "$CMDLINE_FILE" \
+                || echo -n "$key " >> "$CMDLINE_FILE"
+        fi
+    done
+    echo "" >> "$CMDLINE_FILE"
+
+    echo -e "${GREEN}[*] Final cmdline:${NC}"
+    cat "$CMDLINE_FILE"
 }
 
-# Draw menu
-show_menu
+# =======================
+# Firmware Menu
+# =======================
+firmware_menu() {
+    while true; do
+        clear
+        echo -e "${CYAN}ChromeOS Firmware Menu — Version ${VERSION} — ${AUTHOR}${NC}"
+        echo "------------------"
+        for i in "${!FW_OPTIONS[@]}"; do
+            mark="[ ]"
+            [[ ${FW_SELECTED[$i]} == "true" ]] && mark="[x]"
+            echo -e "$i) ${BLUE}${FW_OPTIONS[$i]}${NC} $mark"
+        done
+        echo "------------------"
+        echo -e "e = ${RED}exit${NC} | ENTER = continue"
+        echo -n "Choice: "
+        read -r choice < /dev/tty
 
-# SAFE VT2 LOOP
-while true; do
-    printf "Choice: "
-    read -r choice < /dev/tty  # <-- KEY FIX
+        choice=$(echo "$choice" | tr -d '[:space:]')
+        [[ "$choice" == "e" ]] && exit 0
+        [[ -z "$choice" ]] && break
 
-    choice=$(echo "$choice" | tr -d '[:space:]')
-    [[ -z "$choice" ]] && continue
-
-    case "$choice" in
-        1) FLAGS[0]=$((1-FLAGS[0])) ;;
-        2) FLAGS[1]=$((1-FLAGS[1])) ;;
-        3) FLAGS[2]=$((1-FLAGS[2])) ;;
-        4) FLAGS[3]=$((1-FLAGS[3])) ;;
-        5) FLAGS[4]=$((1-FLAGS[4])) ;;
-        6) FLAGS[5]=$((1-FLAGS[5])) ;;
-        7) FLAGS[6]=$((1-FLAGS[6])) ;;
-        m) nano "$CMDLINE_FILE" ;;
-        p) break ;;
-        e) echo -e "${RED}[!] Exiting.${NC}"; exit 0 ;;
-        *) continue ;;
-    esac
-
-    show_menu
-done
-
-# Build cmdline
-> "$CMDLINE_FILE"
-for i in {0..6}; do
-    if [ "${FLAGS[$i]}" -eq 1 ]; then
-        key="${NAMES[$i]}"
-        if [ "$key" == "dm_verity.error_behavior" ]; then
-            echo -n "dm_verity.error_behavior=ignore " >> "$CMDLINE_FILE"
-        else
-            echo -n "$key " >> "$CMDLINE_FILE"
+        if [[ "$choice" =~ ^[1-2]$ ]]; then
+            [[ ${FW_SELECTED[$choice]} == "true" ]] && FW_SELECTED[$choice]=false || FW_SELECTED[$choice]=true
         fi
+    done
+}
+
+# =======================
+# Firmware patch
+# =======================
+patch_firmware() {
+    echo -e "${GREEN}[*] Backing up firmware...${NC}"
+    flashrom -p internal -r "/mnt/stateful_partition/backups/full_backup.bin"
+
+    # Dev firmware
+    if [[ ${FW_SELECTED[1]} == "true" ]]; then
+        echo -e "${BLUE}[*] Applying dev firmware...${NC}"
+        sudo "$FW_SCRIPT" --nomod_hwid
     fi
-done
-echo "" >> "$CMDLINE_FILE"
 
-echo -e "${GREEN}[*] Final cmdline:${NC}"
-cat "$CMDLINE_FILE"
+    # Early console
+    if [[ ${FW_SELECTED[2]} == "true" ]]; then
+        echo -e "${BLUE}[*] Enabling early console (partition 2)...${NC}"
+        sudo "$SSD_SCRIPT" --enable_earlycon --enable_console --partitions 2 -f
 
-# Repack
-for KERN_BIN in kernel_A.bin kernel_B.bin; do
-    OUT_BIN="new_${KERN_BIN}"
-    echo -e "${BLUE}[*] Repacking $KERN_BIN...${NC}"
-    $VBUTIL --repack "$KERN_BIN" \
-        --config "$CMDLINE_FILE" \
-        --outfile "$OUT_BIN" \
-        --keyblock "$KEYBLOCK" \
-        --signprivate "$PRIVKEY"
-done
+        echo -e "${BLUE}[*] Enabling early console (partition 4)...${NC}"
+        sudo "$SSD_SCRIPT" --enable_earlycon --enable_console --partitions 4 -f
+    fi
+}
 
-# Flash
-echo -e "${BLUE}[*] Flashing kernels...${NC}"
-sudo dd if=new_kernel_A.bin of=$KERN_A bs=4M status=progress
-sudo dd if=new_kernel_B.bin of=$KERN_B bs=4M status=progress
-sync
+# =======================
+# Kernel patch (safe)
+# =======================
+repack_kernels() {
+    echo -e "${BLUE}[*] Dumping kernels...${NC}"
+    sudo dd if=$KERN_A of=kernel_A.bin bs=4M status=progress
+    sudo dd if=$KERN_B of=kernel_B.bin bs=4M status=progress
 
-echo -e "${GREEN}[✔] Done. Reboot to apply.${NC}"
+    for KBIN in kernel_A.bin kernel_B.bin; do
+        OUT="new_$KBIN"
+        echo -e "${BLUE}[*] Repacking $KBIN...${NC}"
+
+        $VBUTIL --repack "$OUT" \
+            --oldblob "$KBIN" \
+            --config "$CMDLINE_FILE" \
+            --keyblock "$KEYBLOCK" \
+            --signprivate "$PRIVKEY" \
+            --version 1
+    done
+
+    echo -e "${BLUE}[*] Flashing kernels...${NC}"
+    sudo dd if=new_kernel_A.bin of=$KERN_A bs=4M status=progress
+    sudo dd if=new_kernel_B.bin of=$KERN_B bs=4M status=progress
+    sync
+}
+
+# =======================
+# RUN
+# =======================
+kernel_menu
+firmware_menu
+
+echo -e "${B}WARNING: This can brick your device${NC}"
+echo -n "Continue? (y/N): "
+read confirm < /dev/tty
+[[ ! "$confirm" =~ ^[Yy]$ ]] && exit 1
+
+patch_firmware
+repack_kernels
+
+echo -e "${GREEN}[✔] DONE — reboot now${NC}"
