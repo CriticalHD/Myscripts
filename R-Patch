@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="v1.3.0"
+VERSION="v1.3.1"
 AUTHOR="CriticalHD/neonnebula"
 
 # Colors
@@ -20,8 +20,6 @@ get_kernver() {
         return
     fi
 
-    # Extract last 4 bytes (little endian like KVS)
-    # Example format handling similar to his C code
     BYTES=$(echo "$RAW" | tail -n1 | grep -oE '([0-9a-fA-F]{2} ){3}[0-9a-fA-F]{2}')
 
     if [[ -z "$BYTES" ]]; then
@@ -30,28 +28,23 @@ get_kernver() {
     fi
 
     read -r b1 b2 b3 b4 <<< "$BYTES"
-
-    # Convert to integer (little endian)
     VALUE=$(( 0x$b1 | (0x$b2 << 8) | (0x$b3 << 16) | (0x$b4 << 24) ))
 
-    KERNVER_HEX=$(printf "0x%08x" "$VALUE")
-    KERNVER="$KERNVER_HEX"
+    KERNVER=$(printf "0x%08x" "$VALUE")
 }
 
 while true; do
     clear
 
-    echo -e "${CYAN}[*] Reading TPM kernver (0x1008)...${NC}"
     get_kernver
 
-    # Header
     echo -e "${CYAN}======================================${NC}"
     echo -e "${WHITE}        R-Patch ${VERSION}${NC}"
     echo -e "${YELLOW}    by ${AUTHOR}${NC}"
     echo -e "${CYAN}======================================${NC}"
     echo
 
-    echo -e "${BLUE}TPM Kernver (Parsed):${NC} ${WHITE}${KERNVER}${NC}"
+    echo -e "${BLUE}TPM Kernver:${NC} ${WHITE}${KERNVER}${NC}"
     echo
 
     echo -e "${GREEN}Options:${NC}"
@@ -61,19 +54,25 @@ while true; do
     echo -e "${BLUE}--------------------------------------${NC}"
     echo
 
-    read -r -p "Enter choice: " choice
+    
+    read -r -p "Enter choice: " choice < /dev/tty
 
-    [[ -z "$choice" ]] && continue
-
-    if [[ "$choice" =~ ^[Qq]$ ]]; then
-        echo -e "${CYAN}Exiting R-Patch...${NC}"
-        exit 0
-    fi
-
-    if [[ "$choice" =~ ^[Rr]$ ]]; then
+    # Prevent empty spam loop
+    if [[ -z "$choice" ]]; then
         continue
     fi
 
-    echo -e "${RED}Invalid option!${NC}"
-    sleep 1.2
+    case "$choice" in
+        [Qq])
+            echo -e "${CYAN}Exiting R-Patch...${NC}"
+            exit 0
+            ;;
+        [Rr])
+            continue
+            ;;
+        *)
+            echo -e "${RED}Invalid option!${NC}"
+            sleep 1.2
+            ;;
+    esac
 done
