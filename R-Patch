@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="v1.3.1"
+VERSION="v2.0.0"
 AUTHOR="CriticalHD/neonnebula"
 
 # Colors
@@ -12,31 +12,103 @@ CYAN='\033[0;36m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
+KERNVER="Loading..."
+FWMP="Loading..."
+TPMVER="Loading..."
+FWID="Loading..."
+GSCVER="Loading..."
+GSCTYPE="Loading..."
+
+# ==============================
+# SYSINFO FUNCTIONS (based on his code)
+# ==============================
+
+get_fwid() {
+    if [[ -f /sys/class/platform/chromeos_acpi/FWID ]]; then
+        FWID=$(cat /sys/class/platform/chromeos_acpi/FWID 2>/dev/null)
+    elif [[ -f /proc/device-tree/firmware/chromeos/firmware-version ]]; then
+        FWID=$(tr -d '\0' < /proc/device-tree/firmware/chromeos/firmware-version)
+    else
+        FWID="Unknown"
+    fi
+}
+
+get_tpmver() {
+    TPMVER=$(tpmc tpmver 2>/dev/null | tr -d '\n')
+    [[ -z "$TPMVER" ]] && TPMVER="Unknown"
+}
+
 get_kernver() {
-    RAW=$(tpmc read 0x1008 9 2>/dev/null)
+    RAW=$(timeout 5 tpmc read 0x1008 9 2>/dev/null)
 
     if [[ -z "$RAW" ]]; then
-        KERNVER="Unknown"
+        KERNVER="Error"
         return
     fi
 
-    BYTES=$(echo "$RAW" | tail -n1 | grep -oE '([0-9a-fA-F]{2} ){3}[0-9a-fA-F]{2}')
-
-    if [[ -z "$BYTES" ]]; then
-        KERNVER="ParseError"
+    # Detect format like his code
+    if [[ "$RAW" == 10* ]]; then
+        # v1
+        BYTES=$(echo "$RAW" | cut -c13-)
+    elif [[ "$RAW" == 2* ]]; then
+        # v0
+        BYTES=$(echo "$RAW" | cut -c15-)
+    else
+        KERNVER="UnknownFmt"
         return
     fi
 
     read -r b1 b2 b3 b4 <<< "$BYTES"
-    VALUE=$(( 0x$b1 | (0x$b2 << 8) | (0x$b3 << 16) | (0x$b4 << 24) ))
 
+    VALUE=$(( 0x$b1 | (0x$b2 << 8) | (0x$b3 << 16) | (0x$b4 << 24) ))
     KERNVER=$(printf "0x%08x" "$VALUE")
 }
 
+get_fwmp() {
+    RAW=$(timeout 5 tpmc read 0x100A 5 2>/dev/null)
+
+    if [[ -z "$RAW" ]]; then
+        FWMP="N/A"
+        return
+    fi
+
+    BYTE=$(echo "$RAW" | cut -c13-14)
+    FWMP="0x$BYTE"
+}
+
+get_gscver() {
+    GSCVER=$(gsctool -a -f 2>/dev/null | tail -n1 | awk '{print $2}')
+    [[ -z "$GSCVER" ]] && GSCVER="Unknown"
+}
+
+get_gsctype() {
+    GSCTYPE=$(/opt/kvs/bin/is_ti50 2>/dev/null)
+    [[ -z "$GSCTYPE" ]] && GSCTYPE="Unknown"
+}
+
+# ==============================
+# BACKGROUND LOADER
+# ==============================
+
+load_info() {
+    get_fwid &
+    get_tpmver &
+    get_kernver &
+    get_fwmp &
+    get_gscver &
+    get_gsctype &
+    wait
+}
+
+# Load once in background
+load_info &
+
+# ==============================
+# MAIN LOOP
+# ==============================
+
 while true; do
     clear
-
-    get_kernver
 
     echo -e "${CYAN}======================================${NC}"
     echo -e "${WHITE}        R-Patch ${VERSION}${NC}"
@@ -44,35 +116,32 @@ while true; do
     echo -e "${CYAN}======================================${NC}"
     echo
 
-    echo -e "${BLUE}TPM Kernver:${NC} ${WHITE}${KERNVER}${NC}"
+    echo -e "${GREEN}System Info:${NC}"
+    echo -e "${BLUE}--------------------------------------${NC}"
+    echo -e "FWID:     ${WHITE}${FWID}${NC}"
+    echo -e "TPM Ver:  ${WHITE}${TPMVER}${NC}"
+    echo -e "Kernver:  ${WHITE}${KERNVER}${NC}"
+    echo -e "FWMP:     ${WHITE}${FWMP}${NC}"
+    echo -e "GSC Ver:  ${WHITE}${GSCVER}${NC}"
+    echo -e "GSC Type: ${WHITE}${GSCTYPE}${NC}"
+    echo -e "${BLUE}--------------------------------------${NC}"
     echo
 
-    echo -e "${GREEN}Options:${NC}"
-    echo -e "${BLUE}--------------------------------------${NC}"
     echo -e "${CYAN}[R] Refresh${NC}"
     echo -e "${CYAN}[Q] Quit${NC}"
-    echo -e "${BLUE}--------------------------------------${NC}"
     echo
 
-    
     read -r -p "Enter choice: " choice < /dev/tty
-
-    # Prevent empty spam loop
-    if [[ -z "$choice" ]]; then
-        continue
-    fi
 
     case "$choice" in
         [Qq])
-            echo -e "${CYAN}Exiting R-Patch...${NC}"
+            echo -e "${CYAN}Exiting...${NC}"
             exit 0
             ;;
         [Rr])
-            continue
-            ;;
-        *)
-            echo -e "${RED}Invalid option!${NC}"
-            sleep 1.2
+            echo -e "${YELLOW}Refreshing...${NC}"
+            load_info &
+            sleep 1
             ;;
     esac
 done
