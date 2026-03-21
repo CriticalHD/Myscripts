@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-VERSION="v46.0.0"
+VERSION="v47.0.0"
 AUTHOR="CriticalHD/neonnebula"
 
 GREEN='\033[0;32m'
@@ -25,9 +25,8 @@ mkdir -p "$BACKUP_DIR"
 SSD_SCRIPT="/usr/share/vboot/bin/make_dev_ssd.sh"
 FW_SCRIPT="/usr/share/vboot/bin/make_dev_firmware.sh"
 
-# Remount stateful RW (usually it already is)
 echo -e "${YELLOW}[*] Ensuring /mnt/stateful_partition is read-write...${NC}"
-sudo mount -o remount,rw /mnt/stateful_partition
+sudo mount -o remount,rw,exec /mnt/stateful_partition
 echo -e "${GREEN}[*] /mnt/stateful_partition is writable${NC}"
 
 CMDLINE_FILE="$WORKDIR/cmdline.txt"
