@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="v1.1.1"
+VERSION="v1.3.0"
 AUTHOR="CriticalHD/neonnebula"
 
 # Colors
@@ -12,76 +12,68 @@ CYAN='\033[0;36m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
-get_current_rb() {
-    # Run once, safely
-    CURRENT=$(tpmc read 2>/dev/null | grep -i rollback | grep -o '[0-7]' | head -n1)
-    [[ -z "$CURRENT" ]] && CURRENT="Unknown"
+get_kernver() {
+    RAW=$(tpmc read 0x1008 9 2>/dev/null)
+
+    if [[ -z "$RAW" ]]; then
+        KERNVER="Unknown"
+        return
+    fi
+
+    # Extract last 4 bytes (little endian like KVS)
+    # Example format handling similar to his C code
+    BYTES=$(echo "$RAW" | tail -n1 | grep -oE '([0-9a-fA-F]{2} ){3}[0-9a-fA-F]{2}')
+
+    if [[ -z "$BYTES" ]]; then
+        KERNVER="ParseError"
+        return
+    fi
+
+    read -r b1 b2 b3 b4 <<< "$BYTES"
+
+    # Convert to integer (little endian)
+    VALUE=$(( 0x$b1 | (0x$b2 << 8) | (0x$b3 << 16) | (0x$b4 << 24) ))
+
+    KERNVER_HEX=$(printf "0x%08x" "$VALUE")
+    KERNVER="$KERNVER_HEX"
 }
 
 while true; do
     clear
 
-    echo -e "${CYAN}Loading TPM info...${NC}"
-    get_current_rb
+    echo -e "${CYAN}[*] Reading TPM kernver (0x1008)...${NC}"
+    get_kernver
 
-    clear
-
+    # Header
     echo -e "${CYAN}======================================${NC}"
     echo -e "${WHITE}        R-Patch ${VERSION}${NC}"
     echo -e "${YELLOW}    by ${AUTHOR}${NC}"
     echo -e "${CYAN}======================================${NC}"
     echo
 
-    echo -e "${BLUE}Current Rollback Value:${NC} ${WHITE}${CURRENT}${NC}"
+    echo -e "${BLUE}TPM Kernver (Parsed):${NC} ${WHITE}${KERNVER}${NC}"
     echo
 
-    echo -e "${RED}WARNING:${NC} Changing rollback values can affect boot security!"
-    echo -e "${YELLOW}Use at your own risk.${NC}"
-    echo
-
-    echo -e "${GREEN}Select Rollback Value:${NC}"
+    echo -e "${GREEN}Options:${NC}"
     echo -e "${BLUE}--------------------------------------${NC}"
-
-    for i in {0..7}; do
-        if [ "$i" -eq 0 ]; then
-            echo -e "${GREEN}[$i]${NC} Lowest"
-        elif [ "$i" -eq 7 ]; then
-            echo -e "${RED}[$i]${NC} Highest"
-        else
-            echo -e "${YELLOW}[$i]${NC} Intermediate"
-        fi
-    done
-
-    echo -e "${BLUE}--------------------------------------${NC}"
+    echo -e "${CYAN}[R] Refresh${NC}"
     echo -e "${CYAN}[Q] Quit${NC}"
+    echo -e "${BLUE}--------------------------------------${NC}"
     echo
 
-    read -r -p "Enter rollback value (0-7) or Q: " choice
+    read -r -p "Enter choice: " choice
 
-    if [[ -z "$choice" ]]; then
-        continue
-    fi
+    [[ -z "$choice" ]] && continue
 
     if [[ "$choice" =~ ^[Qq]$ ]]; then
         echo -e "${CYAN}Exiting R-Patch...${NC}"
         exit 0
     fi
 
-    if [[ ! "$choice" =~ ^[0-7]$ ]]; then
-        echo -e "${RED}Invalid selection!${NC}"
-        sleep 1.2
+    if [[ "$choice" =~ ^[Rr]$ ]]; then
         continue
     fi
 
-    echo
-    echo -e "${CYAN}[*] Setting rollback value to ${choice}...${NC}"
-
-    if sudo tpmc --rollback set "$choice"; then
-        echo -e "${GREEN}[+] Success.${NC}"
-    else
-        echo -e "${RED}[-] Failed.${NC}"
-    fi
-
-    echo
-    read -p "Press Enter to continue..."
+    echo -e "${RED}Invalid option!${NC}"
+    sleep 1.2
 done
