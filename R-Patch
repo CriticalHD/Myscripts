@@ -1,9 +1,6 @@
 #!/bin/bash
 
-# ==============================
-# R-Patch - Rollback Setter Tool
-# ==============================
-VERSION="v1.1.0"
+VERSION="v1.1.1"
 AUTHOR="CriticalHD/neonnebula"
 
 # Colors
@@ -15,47 +12,43 @@ CYAN='\033[0;36m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
-# Function: Get current rollback value
 get_current_rb() {
+    # Run once, safely
     CURRENT=$(tpmc read 2>/dev/null | grep -i rollback | grep -o '[0-7]' | head -n1)
-    if [[ -z "$CURRENT" ]]; then
-        CURRENT="Unknown"
-    fi
+    [[ -z "$CURRENT" ]] && CURRENT="Unknown"
 }
 
-# Main loop
 while true; do
     clear
 
+    echo -e "${CYAN}Loading TPM info...${NC}"
     get_current_rb
 
-    # Header
+    clear
+
     echo -e "${CYAN}======================================${NC}"
     echo -e "${WHITE}        R-Patch ${VERSION}${NC}"
     echo -e "${YELLOW}    by ${AUTHOR}${NC}"
     echo -e "${CYAN}======================================${NC}"
     echo
 
-    # Current value display
     echo -e "${BLUE}Current Rollback Value:${NC} ${WHITE}${CURRENT}${NC}"
     echo
 
-    # Warning
     echo -e "${RED}WARNING:${NC} Changing rollback values can affect boot security!"
     echo -e "${YELLOW}Use at your own risk.${NC}"
     echo
 
-    # Menu
     echo -e "${GREEN}Select Rollback Value:${NC}"
     echo -e "${BLUE}--------------------------------------${NC}"
 
     for i in {0..7}; do
         if [ "$i" -eq 0 ]; then
-            echo -e "${GREEN}[$i]${NC} Lowest (fully downgradable)"
+            echo -e "${GREEN}[$i]${NC} Lowest"
         elif [ "$i" -eq 7 ]; then
-            echo -e "${RED}[$i]${NC} Highest (max protection)"
+            echo -e "${RED}[$i]${NC} Highest"
         else
-            echo -e "${YELLOW}[$i]${NC} Intermediate level"
+            echo -e "${YELLOW}[$i]${NC} Intermediate"
         fi
     done
 
@@ -63,33 +56,32 @@ while true; do
     echo -e "${CYAN}[Q] Quit${NC}"
     echo
 
-    # Input
-    read -p "Enter rollback value (0-7) or Q: " choice
+    read -r -p "Enter rollback value (0-7) or Q: " choice
 
-    # Quit option
+    if [[ -z "$choice" ]]; then
+        continue
+    fi
+
     if [[ "$choice" =~ ^[Qq]$ ]]; then
         echo -e "${CYAN}Exiting R-Patch...${NC}"
         exit 0
     fi
 
-    # Validate input
     if [[ ! "$choice" =~ ^[0-7]$ ]]; then
-        echo -e "${RED}Invalid selection! Must be 0-7.${NC}"
-        sleep 1.5
+        echo -e "${RED}Invalid selection!${NC}"
+        sleep 1.2
         continue
     fi
 
     echo
     echo -e "${CYAN}[*] Setting rollback value to ${choice}...${NC}"
 
-    # Execute command
     if sudo tpmc --rollback set "$choice"; then
-        echo -e "${GREEN}[+] Rollback successfully set to ${choice}.${NC}"
+        echo -e "${GREEN}[+] Success.${NC}"
     else
-        echo -e "${RED}[-] Failed to set rollback value.${NC}"
+        echo -e "${RED}[-] Failed.${NC}"
     fi
 
     echo
-    echo -e "${YELLOW}[*] Press Enter to continue...${NC}"
-    read
+    read -p "Press Enter to continue..."
 done
