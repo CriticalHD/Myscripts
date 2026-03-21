@@ -139,7 +139,7 @@ patch_everything() {
     cp "$CMDLINE_FILE" "$WORKDIR/config.txt"
     cd "$WORKDIR"
 
-    SSD_FLAGS="--set_config config.txt --partitions 2 4 --image $DISK -f"
+    SSD_FLAGS="--set_config config.txt -f"
 
     [[ ${FW_SELECTED[2]} == "true" ]] && SSD_FLAGS="$SSD_FLAGS --enable_earlycon"
     [[ ${FW_SELECTED[3]} == "true" ]] && SSD_FLAGS="$SSD_FLAGS --enable_console"
@@ -151,7 +151,6 @@ patch_everything() {
 
         sudo "$SSD_SCRIPT" \
             --set_config config.txt \
-            --image "$DISK" \
             -f
     fi
 }
