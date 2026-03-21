@@ -1,0 +1,148 @@
+#!/bin/bash
+set -e
+
+VERSION="v40.0.0"
+AUTHOR="CriticalHD/neonnebula"
+
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+RED='\033[0;31m'
+B='\033[1;31m'
+NC='\033[0m'
+
+echo -e "${CYAN}ChromeOS K-Patch Script — Version ${VERSION} — ${AUTHOR}${NC}"
+
+WORKDIR="/tmp/kpatch_work"
+mkdir -p "$WORKDIR"
+cd "$WORKDIR"
+
+BACKUP_DIR="/mnt/stateful_partition/backups"
+mkdir -p "$BACKUP_DIR"
+
+SSD_SCRIPT="/usr/share/vboot/bin/make_dev_ssd.sh"
+FW_SCRIPT="/usr/share/vboot/bin/make_dev_firmware.sh"
+
+CMDLINE_FILE="$WORKDIR/cmdline.txt"
+
+# Kernel options
+KERNEL_FLAGS=(0 0 0 0 0 0 0)
+KERNEL_NAMES=("cros_debug" "disable_rootfs_verification" "module.sig_enforce" "lsm.module_locking" "security" "selinux" "dm_verity.error_behavior")
+
+# Firmware options
+declare -A FW_OPTIONS=(
+  [1]="Apply Dev Firmware"
+  [2]="Enable Early Console"
+  [3]="Enable Console Output"
+)
+declare -A FW_SELECTED
+
+kernel_menu() {
+    while true; do
+        clear
+        echo -e "${CYAN}Kernel Options${NC}"
+        echo "------------------"
+        for i in "${!KERNEL_NAMES[@]}"; do
+            mark="[ ]"
+            [[ ${KERNEL_FLAGS[$i]} -eq 1 ]] && mark="[x]"
+            echo "$((i+1))) ${KERNEL_NAMES[$i]} $mark"
+        done
+        echo "------------------"
+        echo "ENTER = continue | e = exit"
+        read -r choice < /dev/tty
+
+        [[ "$choice" == "e" ]] && exit 0
+        [[ -z "$choice" ]] && break
+
+        idx=$((choice-1))
+        KERNEL_FLAGS[$idx]=$((1-KERNEL_FLAGS[$idx]))
+    done
+
+    > "$CMDLINE_FILE"
+    for i in "${!KERNEL_FLAGS[@]}"; do
+        if [[ ${KERNEL_FLAGS[$i]} -eq 1 ]]; then
+            key="${KERNEL_NAMES[$i]}"
+            [[ "$key" == "dm_verity.error_behavior" ]] \
+                && echo -n "dm_verity.error_behavior=ignore " >> "$CMDLINE_FILE" \
+                || echo -n "$key " >> "$CMDLINE_FILE"
+        fi
+    done
+    echo "" >> "$CMDLINE_FILE"
+
+    echo -e "${GREEN}[*] Cmdline:${NC}"
+    cat "$CMDLINE_FILE"
+}
+
+firmware_menu() {
+    while true; do
+        clear
+        echo -e "${CYAN}Firmware Options${NC}"
+        echo "------------------"
+        for i in "${!FW_OPTIONS[@]}"; do
+            mark="[ ]"
+            [[ ${FW_SELECTED[$i]} == "true" ]] && mark="[x]"
+            echo "$i) ${FW_OPTIONS[$i]} $mark"
+        done
+        echo "------------------"
+        echo "ENTER = continue | e = exit"
+        read -r choice < /dev/tty
+
+        [[ "$choice" == "e" ]] && exit 0
+        [[ -z "$choice" ]] && break
+
+        [[ ${FW_SELECTED[$choice]} == "true" ]] && FW_SELECTED[$choice]=false || FW_SELECTED[$choice]=true
+    done
+}
+
+create_fake_editor() {
+cat > "$WORKDIR/fake_editor.sh" << 'EOF'
+#!/bin/bash
+BASE="config.txt"
+cp "$BASE.$(basename "$1" | awk -F. '{print $NF}')" "$1"
+exit 0
+EOF
+chmod +x "$WORKDIR/fake_editor.sh"
+}
+
+prepare_configs() {
+    cp "$CMDLINE_FILE" "$WORKDIR/config.txt.2"
+    cp "$CMDLINE_FILE" "$WORKDIR/config.txt.4"
+}
+
+patch() {
+    echo -e "${GREEN}[*] Backing up firmware...${NC}"
+    flashrom -p internal -r "$BACKUP_DIR/full_backup.bin"
+
+    if [[ ${FW_SELECTED[1]} == "true" ]]; then
+        echo -e "${BLUE}[*] Dev firmware...${NC}"
+        sudo "$FW_SCRIPT" --nomod_hwid
+    fi
+
+    prepare_configs
+    create_fake_editor
+
+    cd "$WORKDIR"
+
+    SSD_FLAGS="--edit_config -f"
+    [[ ${FW_SELECTED[2]} == "true" ]] && SSD_FLAGS="$SSD_FLAGS --enable_earlycon"
+    [[ ${FW_SELECTED[3]} == "true" ]] && SSD_FLAGS="$SSD_FLAGS --enable_console"
+
+    echo -e "${BLUE}[*] Using edit_config:${NC} $SSD_FLAGS"
+
+    if ! sudo EDITOR="$WORKDIR/fake_editor.sh" "$SSD_SCRIPT" $SSD_FLAGS; then
+        echo -e "${RED}[!] edit_config failed — fallback set_config${NC}"
+
+        sudo "$SSD_SCRIPT" --set_config config.txt -f
+    fi
+}
+
+kernel_menu
+firmware_menu
+
+echo -e "${B}WARNING: This can brick your device${NC}"
+read -p "Continue? (y/N): " c
+[[ "$c" != "y" ]] && exit
+
+patch
+
+echo -e "${GREEN}DONE — reboot now${NC}"
