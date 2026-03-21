@@ -46,6 +46,18 @@ DISK=$(echo "$ROOTDEV" | sed 's/p*[0-9]*$//')
 echo -e "${GREEN}[*] Root device: $ROOTDEV${NC}"
 echo -e "${GREEN}[*] Using disk: $DISK${NC}"
 
+make_usr_rw() {
+    echo -e "${YELLOW}[*] Remounting /usr as read-write...${NC}"
+    sudo mount -o remount,rw /usr
+    echo -e "${GREEN}[*] /usr is now writable${NC}"
+}
+
+restore_usr_ro() {
+    echo -e "${YELLOW}[*] Restoring /usr to read-only...${NC}"
+    sudo mount -o remount,ro /usr
+    echo -e "${GREEN}[*] /usr is now read-only${NC}"
+}
+
 # --------------------------
 # Kernel Menu
 # --------------------------
@@ -149,6 +161,8 @@ patch_everything() {
     echo -e "${GREEN}[*] Backing up firmware...${NC}"
     flashrom -p internal -r "$BACKUP_DIR/full_backup.bin"
 
+    make_usr_rw
+
     if [[ ${FW_SELECTED[1]} == "true" ]]; then
         echo -e "${BLUE}[*] Applying dev firmware...${NC}"
         sudo "$FW_SCRIPT" --nomod_hwid
@@ -166,6 +180,8 @@ patch_everything() {
         echo -e "${RED}[!] edit_config failed — falling back to set_config${NC}"
         sudo "$SSD_SCRIPT" --set_config "$WORKDIR/config.txt" -f
     fi
+
+    restore_usr_ro
 }
 
 # --------------------------
