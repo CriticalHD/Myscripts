@@ -164,6 +164,24 @@ build_partition_cmdlines() {
 }
 
 # --------------------------
+# Force kernel cmdline change
+# --------------------------
+force_kernel_update() {
+    echo -e "${BLUE}[*] Forcing kernel cmdline change...${NC}"
+
+    for part in 2 4; do
+        CONFIG_FILE="$WORKDIR/config.txt.$part"
+        CURRENT=$(sudo vbutil_kernel --get_config /dev/mmcblk0p$part 2>/dev/null || echo "")
+        
+        # If identical, append a dummy space to force change
+        if [[ "$CURRENT" == "$(cat $CONFIG_FILE)" ]]; then
+            echo " " >> "$CONFIG_FILE"
+            echo -e "${YELLOW}[!] Kernel partition $part config identical — added dummy space to force update${NC}"
+        fi
+    done
+}
+
+# --------------------------
 # Verify kernel changes
 # --------------------------
 verify_kernel_changes() {
@@ -192,10 +210,11 @@ patch_everything() {
         sudo "$FW_SCRIPT" --nomod_hwid
     fi
 
-    build_partition_cmdlines
     create_fake_editor
+    build_partition_cmdlines
+    force_kernel_update
     verify_kernel_changes
-
+    
     SSD_FLAGS="--edit_config -f"
     [[ ${FW_SELECTED[2]} == "true" ]] && SSD_FLAGS="$SSD_FLAGS --enable_earlycon"
     [[ ${FW_SELECTED[3]} == "true" ]] && SSD_FLAGS="$SSD_FLAGS --enable_console"
