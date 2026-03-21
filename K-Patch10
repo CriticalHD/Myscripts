@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-VERSION="v45.0.0"
+VERSION="v46.0.0"
 AUTHOR="CriticalHD/neonnebula"
 
 GREEN='\033[0;32m'
@@ -14,7 +14,7 @@ NC='\033[0m'
 
 echo -e "${CYAN}ChromeOS K-Patch Script — Version ${VERSION} — ${AUTHOR}${NC}"
 
-WORKDIR="/tmp/kpatch_work"
+WORKDIR="/mnt/stateful_partition/kpatch_work"
 mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 
@@ -22,17 +22,8 @@ BACKUP_DIR="/mnt/stateful_partition/backups"
 mkdir -p "$BACKUP_DIR"
 
 # Paths to tools now in writable partition
-SSD_SCRIPT="/mnt/stateful_partition/make_dev_ssd.sh"
-FW_SCRIPT="/mnt/stateful_partition/make_dev_firmware.sh"
-
-# Copy binaries to stateful partition if not already there
-for f in "/usr/share/vboot/bin/make_dev_ssd.sh" "/usr/share/vboot/bin/make_dev_firmware.sh"; do
-    if [[ ! -f "/mnt/stateful_partition/$(basename $f)" ]]; then
-        echo -e "${YELLOW}[*] Copying $(basename $f) to /mnt/stateful_partition for writable access...${NC}"
-        sudo cp "$f" /mnt/stateful_partition/
-        sudo chmod +x "/mnt/stateful_partition/$(basename $f)"
-    fi
-done
+SSD_SCRIPT="/usr/share/vboot/bin/make_dev_ssd.sh"
+FW_SCRIPT="/usr/share/vboot/bin/make_dev_firmware.sh"
 
 # Remount stateful RW (usually it already is)
 echo -e "${YELLOW}[*] Ensuring /mnt/stateful_partition is read-write...${NC}"
@@ -133,7 +124,7 @@ create_fake_editor() {
 FAKE_EDITOR="/mnt/stateful_partition/kpatch_editor.sh"
 cat > "$FAKE_EDITOR" << 'EOF'
 #!/bin/bash
-BASE="/tmp/kpatch_work/config.txt"
+BASE="/mnt/stateful_partition/kpatch_work/config.txt"
 PART=$(basename "$1" | awk -F. '{print $NF}')
 if [[ -f "$BASE.$PART" ]]; then
     cp "$BASE.$PART" "$1"
