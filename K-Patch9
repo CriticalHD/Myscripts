@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-VERSION="v44.0.0"
+VERSION="v45.0.0"
 AUTHOR="CriticalHD/neonnebula"
 
 GREEN='\033[0;32m'
@@ -12,7 +12,21 @@ RED='\033[0;31m'
 B='\033[1;31m'
 NC='\033[0m'
 
+make_usr_rw() {
+    echo -e "${YELLOW}[*] Remounting /usr as read-write...${NC}"
+    sudo mount -o remount,rw /usr
+    echo -e "${GREEN}[*] /usr is now writable${NC}"
+}
+
+restore_usr_ro() {
+    echo -e "${YELLOW}[*] Restoring /usr to read-only...${NC}"
+    sudo mount -o remount,ro /usr
+    echo -e "${GREEN}[*] /usr is now read-only${NC}"
+}
+
 echo -e "${CYAN}ChromeOS K-Patch Script — Version ${VERSION} — ${AUTHOR}${NC}"
+
+make_usr_rw
 
 WORKDIR="/usr/bin/kpatch_work"
 mkdir -p "$WORKDIR"
@@ -45,18 +59,6 @@ ROOTDEV=$(rootdev -s)
 DISK=$(echo "$ROOTDEV" | sed 's/p*[0-9]*$//')
 echo -e "${GREEN}[*] Root device: $ROOTDEV${NC}"
 echo -e "${GREEN}[*] Using disk: $DISK${NC}"
-
-make_usr_rw() {
-    echo -e "${YELLOW}[*] Remounting /usr as read-write...${NC}"
-    sudo mount -o remount,rw /usr
-    echo -e "${GREEN}[*] /usr is now writable${NC}"
-}
-
-restore_usr_ro() {
-    echo -e "${YELLOW}[*] Restoring /usr to read-only...${NC}"
-    sudo mount -o remount,ro /usr
-    echo -e "${GREEN}[*] /usr is now read-only${NC}"
-}
 
 # --------------------------
 # Kernel Menu
@@ -160,8 +162,6 @@ prepare_configs() {
 patch_everything() {
     echo -e "${GREEN}[*] Backing up firmware...${NC}"
     flashrom -p internal -r "$BACKUP_DIR/full_backup.bin"
-
-    make_usr_rw
 
     if [[ ${FW_SELECTED[1]} == "true" ]]; then
         echo -e "${BLUE}[*] Applying dev firmware...${NC}"
