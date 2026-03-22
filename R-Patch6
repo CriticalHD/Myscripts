@@ -80,6 +80,6 @@ read choice
 case "$choice" in
     1) write_kernver ;;
     2) show_sysinfo ;;
-    [Qq]) exit 0 ;;
+    Q|q) exit 0 ;;
     *) echo -e "${RED}Invalid choice${NC}" ;;
 esac
