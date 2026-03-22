@@ -1,9 +1,5 @@
 #!/bin/bash
 
-# ==============================
-# R-Patch v5.6 (stable + working)
-# ==============================
-
 INDEX="0x1008"
 
 RED="\033[0;31m"
@@ -12,9 +8,6 @@ YELLOW="\033[1;33m"
 CYAN="\033[0;36m"
 NC="\033[0m"
 
-# ------------------------------
-# CRC8
-# ------------------------------
 crc8() {
     local data=("$@")
     local crc=0
@@ -30,9 +23,6 @@ crc8() {
     printf "%02x" $crc
 }
 
-# ------------------------------
-# LE32
-# ------------------------------
 to_le32() {
     local val=$1
     printf "%02x %02x %02x %02x" \
@@ -42,9 +32,6 @@ to_le32() {
         $(( (val >> 24) & 0xFF ))
 }
 
-# ------------------------------
-# Detect version
-# ------------------------------
 detect_version() {
     raw=$(tpmc read $INDEX 1 2>/dev/null)
     byte=$(echo "$raw" | grep -oE '[0-9a-fA-F]{2}' | head -n1 | tr 'A-F' 'a-f')
@@ -54,9 +41,6 @@ detect_version() {
     echo "UNKNOWN"
 }
 
-# ------------------------------
-# Build struct
-# ------------------------------
 build_struct() {
     local version=$1
     local kernver=$2
@@ -67,7 +51,6 @@ build_struct() {
         kv=($(to_le32 "$kernver"))
         reserved=("00" "00" "00")
         crc="00"
-
         full=("$struct_version" "${uid[@]}" "${kv[@]}" "${reserved[@]}" "$crc")
         full[11]=$(crc8 "${full[@]:0:11}")
 
@@ -76,12 +59,9 @@ build_struct() {
         struct_size="28"
         crc="00"
         flags="00"
-
         kv=($(to_le32 "$kernver"))
-
         ec_hash=()
         for ((i=0;i<32;i++)); do ec_hash+=("00"); done
-
         full=("$struct_version" "$struct_size" "$crc" "$flags" "${kv[@]}" "${ec_hash[@]}")
         full[2]=$(crc8 "${full[@]:3}")
 
@@ -93,9 +73,6 @@ build_struct() {
     echo "${full[@]}"
 }
 
-# ------------------------------
-# Write kernver
-# ------------------------------
 write_kernver() {
     clear
 
@@ -106,18 +83,17 @@ write_kernver() {
 
     if [[ "$version" == "UNKNOWN" ]]; then
         echo -e "${RED}TPM read failed or index empty${NC}"
-        echo "Raw:"
         tpmc read $INDEX 1
         echo
-        read -p "Press Enter..." _
+        read -r _
         return
     fi
 
-    read -p "Enter kernver (hex): " val
+    read -r -p "Enter kernver (hex): " val
 
     if [[ ! "$val" =~ ^0x[0-9a-fA-F]+$ ]]; then
         echo -e "${RED}Invalid format${NC}"
-        sleep 1
+        read -r _
         return
     fi
 
@@ -129,31 +105,34 @@ write_kernver() {
     printf "%s " "${bytes[@]}"
     echo -e "\n"
 
-    read -p "Confirm write? (y/N): " c
+    read -r -p "Confirm write? (y/N): " c
     [[ "$c" != "y" ]] && return
 
     tpmc write $INDEX "${bytes[@]}"
     echo -e "${GREEN}Write attempted${NC}"
 
-    read -p "Press Enter..." _
+    read -r _
 }
 
 while true; do
     clear
     echo -e "${CYAN}==============================${NC}"
-    echo -e "${CYAN}        R-Patch v5.6${NC}"
+    echo -e "${CYAN}        R-Patch${NC}"
     echo -e "${CYAN}==============================${NC}"
     echo
     echo -e "${YELLOW}[1]${NC} Set kernver"
     echo -e "${YELLOW}[Q]${NC} Quit"
     echo
 
-    read -r -p "Choice: " choice
+    read -r choice || break
+
+    if [[ -z "$choice" ]]; then
+        continue
+    fi
 
     case "$choice" in
         1) write_kernver ;;
         [Qq]) clear; exit 0 ;;
-        "") ;; 
-        *) echo -e "${RED}Invalid choice${NC}"; sleep 0.7 ;;
+        *) echo -e "${RED}Invalid choice${NC}"; sleep 0.4 ;;
     esac
 done
