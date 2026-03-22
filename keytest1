@@ -81,7 +81,7 @@ echo "Downloaded the recovery key file to $DOWNLOADS_DIR/$RECOVERY_KEY_FILE."
 echo "WARNING: Before proceeding, ensure that Write Protect (WP) is disabled on your device."
 echo "Failure to disable WP may result in the recovery key not being applied correctly."
 read -p "Are you sure you want to apply the recovery key with futility? (y/n) " -n 1 -r
-echo    
+
 if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     echo "Aborting the process."
     exit 1
