@@ -1,0 +1,139 @@
+#!/bin/bash
+
+# ==============================
+# CONFIG
+# ==============================
+
+INDEX="0x1008"
+STRUCT_SIZE=40   # V1 size
+
+# ==============================
+# CRC8 (same poly as vboot)
+# ==============================
+
+crc8() {
+    local data=("$@")
+    local crc=0
+
+    for byte in "${data[@]}"; do
+        b=$((16#$byte))
+
+        for ((i=0; i<8; i++)); do
+            mix=$(( (crc ^ b) & 1 ))
+            crc=$(( crc >> 1 ))
+
+            if [ $mix -ne 0 ]; then
+                crc=$(( crc ^ 0x8C ))
+            fi
+
+            b=$(( b >> 1 ))
+        done
+    done
+
+    printf "%02x" $crc
+}
+
+# ==============================
+# Convert u32 → little endian
+# ==============================
+
+to_le32() {
+    local val=$1
+    printf "%02x %02x %02x %02x" \
+        $(( val & 0xFF )) \
+        $(( (val >> 8) & 0xFF )) \
+        $(( (val >> 16) & 0xFF )) \
+        $(( (val >> 24) & 0xFF ))
+}
+
+# ==============================
+# BUILD STRUCT (V1)
+# ==============================
+
+build_struct() {
+    local kernver=$1
+
+    # Header
+    struct_version="01"
+    struct_size="28"   # 40 bytes
+    crc="00"           # placeholder
+    flags="00"
+
+    # kernver
+    kv=($(to_le32 "$kernver"))
+
+    # ec_hash (32 bytes zeroed)
+    ec_hash=()
+    for ((i=0;i<32;i++)); do
+        ec_hash+=("00")
+    done
+
+    # Full struct (temp CRC=00)
+    full=(
+        "$struct_version"
+        "$struct_size"
+        "$crc"
+        "$flags"
+        "${kv[@]}"
+        "${ec_hash[@]}"
+    )
+
+    # Compute CRC over bytes 3+
+    crc_val=$(crc8 "${full[@]:3}")
+
+    # Insert CRC
+    full[2]=$crc_val
+
+    echo "${full[@]}"
+}
+
+# ==============================
+# WRITE FUNCTION
+# ==============================
+
+write_kernver() {
+    read -p "Enter new kernver: " val
+
+    if ! [[ "$val" =~ ^[0-9]+$ ]]; then
+        echo "Invalid number"
+        return
+    fi
+
+    bytes=($(build_struct "$val"))
+
+    echo
+    echo "Writing struct:"
+    printf "%s " "${bytes[@]}"
+    echo
+    echo
+
+    read -p "Confirm? (y/N): " c
+    [[ "$c" != "y" ]] && return
+
+    tpmc write $INDEX "${bytes[@]}"
+
+    echo "Done."
+}
+
+# ==============================
+# MENU
+# ==============================
+
+while true; do
+    clear
+    echo "=============================="
+    echo "        R-Patch v4.0"
+    echo "    by CriticalHD/neonnebula"
+    echo "=============================="
+    echo
+    echo "[1] Set kernver (proper struct)"
+    echo "[Q] Quit"
+    echo
+
+    read -p "Choice: " choice
+
+    case "$choice" in
+        1) write_kernver ;;
+        [Qq]) exit 0 ;;
+    esac
+done
