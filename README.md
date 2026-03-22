@@ -8,5 +8,5 @@ Oh how I hate this god forsaken script
 ````curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/K-Patch | bash````
 
 ## Rollback Patcher
-
+Heavily kxtz inspired
 ````curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/R-Patch | bash````
