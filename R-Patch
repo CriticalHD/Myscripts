@@ -1,147 +1,168 @@
 #!/bin/bash
 
-VERSION="v2.0.0"
-AUTHOR="CriticalHD/neonnebula"
+# ==============================
+# R-Patch v5.0
+# Author: CriticalHD/neonnebula
+# ==============================
+
+INDEX="0x1008"
 
 # Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-WHITE='\033[1;37m'
-NC='\033[0m'
+RED="\033[0;31m"
+GREEN="\033[0;32m"
+YELLOW="\033[1;33m"
+CYAN="\033[0;36m"
+NC="\033[0m"
 
-KERNVER="Loading..."
-FWMP="Loading..."
-TPMVER="Loading..."
-FWID="Loading..."
-GSCVER="Loading..."
-GSCTYPE="Loading..."
+# ------------------------------
+# CRC8 (polynomial 0x8C)
+# ------------------------------
+crc8() {
+    local data=("$@")
+    local crc=0
 
-# ==============================
-# SYSINFO FUNCTIONS (based on his code)
-# ==============================
+    for byte in "${data[@]}"; do
+        b=$((16#$byte))
+        for ((i=0;i<8;i++)); do
+            mix=$(( (crc ^ b) & 1 ))
+            crc=$(( crc >> 1 ))
+            (( mix != 0 )) && crc=$(( crc ^ 0x8C ))
+            b=$(( b >> 1 ))
+        done
+    done
+    printf "%02x" $crc
+}
 
-get_fwid() {
-    if [[ -f /sys/class/platform/chromeos_acpi/FWID ]]; then
-        FWID=$(cat /sys/class/platform/chromeos_acpi/FWID 2>/dev/null)
-    elif [[ -f /proc/device-tree/firmware/chromeos/firmware-version ]]; then
-        FWID=$(tr -d '\0' < /proc/device-tree/firmware/chromeos/firmware-version)
+# ------------------------------
+# Convert u32 → little endian
+# ------------------------------
+to_le32() {
+    local val=$1
+    printf "%02x %02x %02x %02x" \
+        $(( val & 0xFF )) \
+        $(( (val >> 8) & 0xFF )) \
+        $(( (val >> 16) & 0xFF )) \
+        $(( (val >> 24) & 0xFF ))
+}
+
+# ------------------------------
+# Read first byte to detect struct version
+# ------------------------------
+detect_version() {
+    local byte=$(tpmc read $INDEX 1)
+    byte=$(echo $byte | awk '{print $1}')
+    if [[ "$byte" == "02" ]]; then
+        echo "V0"
+    elif [[ "$byte" == "10" ]]; then
+        echo "V1"
     else
-        FWID="Unknown"
+        echo "UNKNOWN"
     fi
 }
 
-get_tpmver() {
-    TPMVER=$(tpmc tpmver 2>/dev/null | tr -d '\n')
-    [[ -z "$TPMVER" ]] && TPMVER="Unknown"
-}
+# ------------------------------
+# Build struct for given kernver
+# ------------------------------
+build_struct() {
+    local version=$1
+    local kernver=$2
 
-get_kernver() {
-    RAW=$(timeout 5 tpmc read 0x1008 9 2>/dev/null)
+    if [[ "$version" == "V0" ]]; then
+        # V0 layout
+        struct_version="02"
+        uid=("4c" "57" "52" "47")      # "GRWL" little-endian
+        kv=($(to_le32 "$kernver"))
+        reserved=("00" "00" "00")
+        crc="00"                        # placeholder
 
-    if [[ -z "$RAW" ]]; then
-        KERNVER="Error"
-        return
-    fi
+        full=("$struct_version" "${uid[@]}" "${kv[@]}" "${reserved[@]}" "$crc")
+        # CRC over struct_version + uid + kernver + reserved
+        crc_val=$(crc8 "${full[@]:0:11}")
+        full[11]=$crc_val
 
-    # Detect format like his code
-    if [[ "$RAW" == 10* ]]; then
-        # v1
-        BYTES=$(echo "$RAW" | cut -c13-)
-    elif [[ "$RAW" == 2* ]]; then
-        # v0
-        BYTES=$(echo "$RAW" | cut -c15-)
+    elif [[ "$version" == "V1" ]]; then
+        # V1 layout
+        struct_version="10"
+        struct_size="28"                # 40 bytes
+        crc="00"                        # placeholder
+        flags="00"
+        kv=($(to_le32 "$kernver"))
+
+        # ec_hash 32 bytes zero
+        ec_hash=()
+        for ((i=0;i<32;i++)); do ec_hash+=("00"); done
+
+        full=("$struct_version" "$struct_size" "$crc" "$flags" "${kv[@]}" "${ec_hash[@]}")
+
+        # CRC over flags + kernver + ec_hash (skip first 3 bytes)
+        crc_val=$(crc8 "${full[@]:3}")
+        full[2]=$crc_val
+
     else
-        KERNVER="UnknownFmt"
+        echo -e "${RED}Unknown struct version, cannot build.${NC}"
+        return 1
+    fi
+
+    echo "${full[@]}"
+}
+
+# ------------------------------
+# Write kernver
+# ------------------------------
+write_kernver() {
+    version=$(detect_version)
+    if [[ "$version" == "UNKNOWN" ]]; then
+        echo -e "${RED}Cannot detect TPM struct version.${NC}"
+        sleep 2
         return
     fi
 
-    read -r b1 b2 b3 b4 <<< "$BYTES"
+    echo -e "${CYAN}Detected version: $version${NC}"
 
-    VALUE=$(( 0x$b1 | (0x$b2 << 8) | (0x$b3 << 16) | (0x$b4 << 24) ))
-    KERNVER=$(printf "0x%08x" "$VALUE")
-}
+    read -p "Enter new kernver (hex, e.g. 0x00010001): " val
 
-get_fwmp() {
-    RAW=$(timeout 5 tpmc read 0x100A 5 2>/dev/null)
-
-    if [[ -z "$RAW" ]]; then
-        FWMP="N/A"
+    if [[ "$val" =~ ^0x[0-9a-fA-F]+$ ]]; then
+        kernver=$((val))
+    else
+        echo -e "${RED}Invalid number${NC}"
+        sleep 1
         return
     fi
 
-    BYTE=$(echo "$RAW" | cut -c13-14)
-    FWMP="0x$BYTE"
+    bytes=($(build_struct "$version" "$kernver"))
+    if [[ $? -ne 0 ]]; then return; fi
+
+    echo
+    echo -e "${CYAN}Constructed struct:${NC}"
+    printf "%s " "${bytes[@]}"
+    echo -e "\n"
+
+    read -p "Confirm write? (y/N): " c
+    [[ "$c" != "y" ]] && return
+
+    tpmc write $INDEX "${bytes[@]}"
+    echo -e "${GREEN}Write attempted.${NC}"
+    sleep 2
 }
 
-get_gscver() {
-    GSCVER=$(gsctool -a -f 2>/dev/null | tail -n1 | awk '{print $2}')
-    [[ -z "$GSCVER" ]] && GSCVER="Unknown"
-}
-
-get_gsctype() {
-    GSCTYPE=$(/opt/kvs/bin/is_ti50 2>/dev/null)
-    [[ -z "$GSCTYPE" ]] && GSCTYPE="Unknown"
-}
-
-# ==============================
-# BACKGROUND LOADER
-# ==============================
-
-load_info() {
-    get_fwid &
-    get_tpmver &
-    get_kernver &
-    get_fwmp &
-    get_gscver &
-    get_gsctype &
-    wait
-}
-
-# Load once in background
-load_info &
-
-# ==============================
-# MAIN LOOP
-# ==============================
-
+# ------------------------------
+# Color-coded menu
+# ------------------------------
 while true; do
     clear
-
-    echo -e "${CYAN}======================================${NC}"
-    echo -e "${WHITE}        R-Patch ${VERSION}${NC}"
-    echo -e "${YELLOW}    by ${AUTHOR}${NC}"
-    echo -e "${CYAN}======================================${NC}"
+    echo -e "${CYAN}==============================${NC}"
+    echo -e "${CYAN}        R-Patch v5.0${NC}"
+    echo -e "${CYAN}    by CriticalHD/neonnebula${NC}"
+    echo -e "${CYAN}==============================${NC}"
+    echo
+    echo -e "${YELLOW}[1]${NC} Set kernver (auto-detect V0/V1)"
+    echo -e "${YELLOW}[Q]${NC} Quit"
     echo
 
-    echo -e "${GREEN}System Info:${NC}"
-    echo -e "${BLUE}--------------------------------------${NC}"
-    echo -e "FWID:     ${WHITE}${FWID}${NC}"
-    echo -e "TPM Ver:  ${WHITE}${TPMVER}${NC}"
-    echo -e "Kernver:  ${WHITE}${KERNVER}${NC}"
-    echo -e "FWMP:     ${WHITE}${FWMP}${NC}"
-    echo -e "GSC Ver:  ${WHITE}${GSCVER}${NC}"
-    echo -e "GSC Type: ${WHITE}${GSCTYPE}${NC}"
-    echo -e "${BLUE}--------------------------------------${NC}"
-    echo
-
-    echo -e "${CYAN}[R] Refresh${NC}"
-    echo -e "${CYAN}[Q] Quit${NC}"
-    echo
-
-    read -r -p "Enter choice: " choice < /dev/tty
-
+    read -p "Choice: " choice
     case "$choice" in
-        [Qq])
-            echo -e "${CYAN}Exiting...${NC}"
-            exit 0
-            ;;
-        [Rr])
-            echo -e "${YELLOW}Refreshing...${NC}"
-            load_info &
-            sleep 1
-            ;;
+        1) write_kernver ;;
+        [Qq]) exit 0 ;;
+        *) echo -e "${RED}Invalid choice${NC}"; sleep 1 ;;
     esac
 done
