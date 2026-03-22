@@ -41,7 +41,7 @@ write_kernver(){
     version=$(detect_version)
     [[ "$version" == "UNKNOWN" ]] && { echo -e "${RED}Cannot detect TPM struct version${NC}"; read -r </dev/tty; return; }
     echo -e "${CYAN}Detected version: $version${NC}"
-    echo -n "Enter new kernver (hex, e.g. 0x00010001): "
+    echo -n "Enter new kernver (hex, 0x00010001): "
     read -r val </dev/tty
     [[ ! "$val" =~ ^0x[0-9a-fA-F]+$ ]] && { echo -e "${RED}Invalid number... Press enter to return${NC}"; read -r </dev/tty; return; }
     kernver=$((val))
