@@ -1,0 +1,129 @@
+#!/bin/bash
+
+# ==============================
+# R-Patch v4.0
+# Author: CriticalHD/neonnebula
+# ==============================
+
+INDEX="0x1008"
+STRUCT_SIZE=40   # V1 size
+
+# Colors
+RED="\033[0;31m"
+GREEN="\033[0;32m"
+YELLOW="\033[1;33m"
+CYAN="\033[0;36m"
+NC="\033[0m"
+
+# ------------------------------
+# CRC8
+# ------------------------------
+crc8() {
+    local data=("$@")
+    local crc=0
+
+    for byte in "${data[@]}"; do
+        b=$((16#$byte))
+        for ((i=0;i<8;i++)); do
+            mix=$(( (crc ^ b) & 1 ))
+            crc=$(( crc >> 1 ))
+            (( mix != 0 )) && crc=$(( crc ^ 0x8C ))
+            b=$(( b >> 1 ))
+        done
+    done
+    printf "%02x" $crc
+}
+
+# ------------------------------
+# Little endian
+# ------------------------------
+to_le32() {
+    local val=$1
+    printf "%02x %02x %02x %02x" \
+        $(( val & 0xFF )) \
+        $(( (val >> 8) & 0xFF )) \
+        $(( (val >> 16) & 0xFF )) \
+        $(( (val >> 24) & 0xFF ))
+}
+
+# ------------------------------
+# Build V1 struct
+# ------------------------------
+build_struct() {
+    local kernver=$1
+
+    struct_version="01"
+    struct_size="28"   # 40 bytes
+    crc="00"
+    flags="00"
+
+    kv=($(to_le32 "$kernver"))
+
+    ec_hash=()
+    for ((i=0;i<32;i++)); do
+        ec_hash+=("00")
+    done
+
+    full=(
+        "$struct_version"
+        "$struct_size"
+        "$crc"
+        "$flags"
+        "${kv[@]}"
+        "${ec_hash[@]}"
+    )
+
+    crc_val=$(crc8 "${full[@]:3}")
+    full[2]=$crc_val
+
+    echo "${full[@]}"
+}
+
+# ------------------------------
+# Write kernver
+# ------------------------------
+write_kernver() {
+    read -p "Enter new kernver (0-7 recommended): " val
+
+    if ! [[ "$val" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Invalid number${NC}"
+        sleep 1
+        return
+    fi
+
+    bytes=($(build_struct "$val"))
+
+    echo
+    echo -e "${CYAN}Constructed struct:${NC}"
+    printf "%s " "${bytes[@]}"
+    echo -e "\n"
+
+    read -p "Confirm write? (y/N): " c
+    [[ "$c" != "y" ]] && return
+
+    tpmc write $INDEX "${bytes[@]}"
+    echo -e "${GREEN}Write attempted.${NC}"
+    sleep 2
+}
+
+# ------------------------------
+# Menu
+# ------------------------------
+while true; do
+    clear
+    echo -e "${CYAN}==============================${NC}"
+    echo -e "${CYAN}        R-Patch v4.0${NC}"
+    echo -e "${CYAN}    by CriticalHD/neonnebula${NC}"
+    echo -e "${CYAN}==============================${NC}"
+    echo
+    echo -e "${YELLOW}[1]${NC} Set kernver (proper struct)"
+    echo -e "${YELLOW}[Q]${NC} Quit"
+    echo
+
+    read -p "Choice: " choice
+    case "$choice" in
+        1) write_kernver ;;
+        [Qq]) exit 0 ;;
+        *) echo -e "${RED}Invalid choice${NC}"; sleep 1 ;;
+    esac
+done
