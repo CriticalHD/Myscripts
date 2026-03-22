@@ -1,0 +1,161 @@
+#!/bin/bash
+
+# ==============================
+# R-Patch v5.1
+# Author: CriticalHD/neonnebula
+# ==============================
+
+INDEX="0x1008"
+
+# Colors
+RED="\033[0;31m"
+GREEN="\033[0;32m"
+YELLOW="\033[1;33m"
+CYAN="\033[0;36m"
+NC="\033[0m"
+
+# ------------------------------
+# CRC8
+# ------------------------------
+crc8() {
+    local data=("$@")
+    local crc=0
+    for byte in "${data[@]}"; do
+        b=$((16#$byte))
+        for ((i=0;i<8;i++)); do
+            mix=$(( (crc ^ b) & 1 ))
+            crc=$(( crc >> 1 ))
+            (( mix != 0 )) && crc=$(( crc ^ 0x8C ))
+            b=$(( b >> 1 ))
+        done
+    done
+    printf "%02x" $crc
+}
+
+# ------------------------------
+# Convert u32 → little endian
+# ------------------------------
+to_le32() {
+    local val=$1
+    printf "%02x %02x %02x %02x" \
+        $(( val & 0xFF )) \
+        $(( (val >> 8) & 0xFF )) \
+        $(( (val >> 16) & 0xFF )) \
+        $(( (val >> 24) & 0xFF ))
+}
+
+# ------------------------------
+# Detect struct version
+# ------------------------------
+detect_version() {
+    local byte=$(tpmc read $INDEX 1)
+    byte=$(echo $byte | awk '{print $1}')
+    if [[ "$byte" == "02" ]]; then
+        echo "V0"
+    elif [[ "$byte" == "10" ]]; then
+        echo "V1"
+    else
+        echo "UNKNOWN"
+    fi
+}
+
+# ------------------------------
+# Build struct
+# ------------------------------
+build_struct() {
+    local version=$1
+    local kernver=$2
+
+    if [[ "$version" == "V0" ]]; then
+        struct_version="02"
+        uid=("4c" "57" "52" "47")
+        kv=($(to_le32 "$kernver"))
+        reserved=("00" "00" "00")
+        crc="00"
+        full=("$struct_version" "${uid[@]}" "${kv[@]}" "${reserved[@]}" "$crc")
+        crc_val=$(crc8 "${full[@]:0:11}")
+        full[11]=$crc_val
+
+    elif [[ "$version" == "V1" ]]; then
+        struct_version="10"
+        struct_size="28"
+        crc="00"
+        flags="00"
+        kv=($(to_le32 "$kernver"))
+        ec_hash=()
+        for ((i=0;i<32;i++)); do ec_hash+=("00"); done
+        full=("$struct_version" "$struct_size" "$crc" "$flags" "${kv[@]}" "${ec_hash[@]}")
+        crc_val=$(crc8 "${full[@]:3}")
+        full[2]=$crc_val
+
+    else
+        echo -e "${RED}Unknown struct version${NC}"
+        return 1
+    fi
+
+    echo "${full[@]}"
+}
+
+# ------------------------------
+# Write kernver
+# ------------------------------
+write_kernver() {
+    version=$(detect_version)
+    if [[ "$version" == "UNKNOWN" ]]; then
+        echo -e "${RED}Cannot detect TPM struct version${NC}"
+        sleep 2
+        return
+    fi
+
+    echo -e "${CYAN}Detected version: $version${NC}"
+    echo -n "Enter new kernver (hex, e.g. 0x00010001): "
+    read val
+
+    if [[ "$val" =~ ^0x[0-9a-fA-F]+$ ]]; then
+        kernver=$((val))
+    else
+        echo -e "${RED}Invalid number${NC}"
+        sleep 1
+        return
+    fi
+
+    bytes=($(build_struct "$version" "$kernver"))
+    if [[ $? -ne 0 ]]; then return; fi
+
+    echo -e "${CYAN}Constructed struct:${NC}"
+    printf "%s " "${bytes[@]}"
+    echo -e "\n"
+
+    echo -n "Confirm write? (y/N): "
+    read c
+    [[ "$c" != "y" ]] && return
+
+    tpmc write $INDEX "${bytes[@]}"
+    echo -e "${GREEN}Write attempted.${NC}"
+    echo "Press Enter to return to menu..."
+    read
+}
+
+# ------------------------------
+# Menu loop
+# ------------------------------
+while true; do
+    clear
+    echo -e "${CYAN}==============================${NC}"
+    echo -e "${CYAN}        R-Patch v5.1${NC}"
+    echo -e "${CYAN}    by CriticalHD/neonnebula${NC}"
+    echo -e "${CYAN}==============================${NC}"
+    echo
+    echo -e "${YELLOW}[1]${NC} Set kernver (auto-detect V0/V1)"
+    echo -e "${YELLOW}[Q]${NC} Quit"
+    echo
+
+    echo -n "Choice: "
+    read choice
+
+    case "$choice" in
+        1) write_kernver ;;
+        [Qq]) exit 0 ;;
+        *) echo -e "${RED}Invalid choice${NC}"; echo "Press Enter to continue..."; read ;;
+    esac
+done
