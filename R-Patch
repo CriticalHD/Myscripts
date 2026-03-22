@@ -155,14 +155,17 @@ while true; do
     echo -e "${CYAN}    by CriticalHD/neonnebula${NC}"
     echo -e "${CYAN}==============================${NC}"
     echo
-    echo -e "${YELLOW}[1]${NC} Set kernver (auto-detect V0/V1)"
+    echo -e "${YELLOW}[1]${NC} Set kernver"
     echo -e "${YELLOW}[Q]${NC} Quit"
     echo
 
-    read -p "Choice: " choice
+    echo -n "Choice: "
+    read choice
+
     case "$choice" in
         1) write_kernver ;;
         [Qq]) exit 0 ;;
+        "") ;; # empty input, do nothing
         *) echo -e "${RED}Invalid choice${NC}"; sleep 1 ;;
     esac
 done
