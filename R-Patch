@@ -148,7 +148,7 @@ while true; do
     echo -e "${YELLOW}[Q]${NC} Quit"
     echo
 
-    read -r choice
+    read -r -p "Choice: " choice
 
     case "$choice" in
         1) write_kernver ;;
