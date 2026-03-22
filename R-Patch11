@@ -14,7 +14,7 @@ trim_newline() { echo -n "$1" | tr -d '\n'; }
 getTpmVersion(){ output=$(tpmc tpmver 2>/dev/null); trim_newline "$output"; }
 getKernver(){ output=$(tpmc read $INDEX 9 2>/dev/null); trim_newline "$output"; [[ "$output" == "" ]] && echo "UNKNOWN" || echo "$output"; }
 getFWMPFlags(){ output=$(device_management_client --action=get_firmware_management_parameters 2>/dev/null | grep -i 'flags' | awk '{print $2}'); trim_newline "$output"; [[ "$output" == "" ]] && echo "UNKNOWN" || echo "$output"; }
-getGSCType(){ [[ "$(getTpmVersion)" == "1.2" ]] && echo "cr50" || echo "ti50"; }
+getGSCType(){ [[ "$(tpmc tpmver 2>/dev/null)" == "1.2" ]] && echo "preCr50" || (gsctool -a -I 2>/dev/null | grep -qi AllowUnverifiedRo && echo "ti50" || echo "cr50"); }
 getGSCRWVersion(){ output=$(gsctool -a -f 2>/dev/null | tail -n1 | awk '{printf $2}'); trim_newline "$output"; [[ "$output" == "" ]] && echo "UNKNOWN" || echo "$output"; }
 
 detect_version(){
@@ -43,7 +43,7 @@ write_kernver(){
     echo -e "${CYAN}Detected version: $version${NC}"
     echo -n "Enter new kernver (hex, e.g. 0x00010001): "
     read -r val </dev/tty
-    [[ ! "$val" =~ ^0x[0-9a-fA-F]+$ ]] && { echo -e "${RED}Invalid number${NC}"; read -r </dev/tty; return; }
+    [[ ! "$val" =~ ^0x[0-9a-fA-F]+$ ]] && { echo -e "${RED}Invalid number... Press enter to return${NC}"; read -r </dev/tty; return; }
     kernver=$((val))
     bytes=($(build_struct "$version" "$kernver"))
     [[ $? -ne 0 ]] && return
@@ -72,15 +72,15 @@ show_sysinfo(){
     read -r </dev/tty
 }
 
-# Main menu loop
+# Menu Loop
 while true; do
     clear
     echo -e "${CYAN}==============================${NC}"
-    echo -e "${CYAN}        R-Patch v5.3${NC}"
+    echo -e "${CYAN}        R-Patch v5.4${NC}"
     echo -e "${CYAN}    by CriticalHD/neonnebula${NC}"
     echo -e "${CYAN}==============================${NC}"
     echo
-    echo -e "${YELLOW}1)${NC} Set kernver (auto-detect V0/V1)"
+    echo -e "${YELLOW}1)${NC} Set kernver"
     echo -e "${YELLOW}2)${NC} Show current TPM info"
     echo -e "${YELLOW}Q)${NC} Quit"
     echo
