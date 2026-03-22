@@ -1,0 +1,81 @@
+#!/bin/bash
+
+VERSION="v3.0.0"
+AUTHOR="CriticalHD/neonnebula"
+
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+
+# ==============================
+# FUNCTIONS
+# ==============================
+
+get_tpmver() {
+    tpmc tpmver 2>/dev/null
+}
+
+test_tpm_access() {
+    TEST=$(timeout 3 tpmc read 0x1008 2 2>/dev/null)
+    [[ -z "$TEST" ]] && echo "Restricted" || echo "Accessible"
+}
+
+write_kernver() {
+    echo
+    read -p "Enter bytes to write (e.g. 02 00 00 00): " bytes < /dev/tty
+
+    echo -e "${CYAN}[*] Writing to TPM index 0x1008...${NC}"
+
+    OUTPUT=$(tpmc write 0x1008 $bytes 2>&1)
+
+    if [[ $? -eq 0 ]]; then
+        echo -e "${GREEN}[+] Write attempted${NC}"
+    else
+        echo -e "${RED}[-] Write failed${NC}"
+    fi
+
+    echo
+    echo "Output:"
+    echo "$OUTPUT"
+    echo
+    read -p "Press Enter..." < /dev/tty
+}
+
+# ==============================
+# MAIN LOOP
+# ==============================
+
+while true; do
+    clear
+
+    TPMVER=$(get_tpmver)
+    ACCESS=$(test_tpm_access)
+
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${WHITE}        R-Patch ${VERSION}${NC}"
+    echo -e "${YELLOW}    by ${AUTHOR}${NC}"
+    echo -e "${CYAN}======================================${NC}"
+    echo
+
+    echo -e "${BLUE}TPM Info:${NC}"
+    echo -e "${BLUE}--------------------------------------${NC}"
+    echo -e "TPM Ver: ${WHITE}${TPMVER}${NC}"
+    echo -e "Access:  ${WHITE}${ACCESS}${NC}"
+    echo -e "${BLUE}--------------------------------------${NC}"
+    echo
+
+    echo -e "${CYAN}[1] Write to kernver (0x1008)${NC}"
+    echo -e "${CYAN}[Q] Quit${NC}"
+    echo
+
+    read -r -p "Choice: " choice < /dev/tty
+
+    case "$choice" in
+        1) write_kernver ;;
+        [Qq]) exit 0 ;;
+    esac
+done
