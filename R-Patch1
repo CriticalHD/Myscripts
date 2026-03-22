@@ -1,0 +1,126 @@
+#!/bin/bash
+[ -t 0 ] || exec bash -i "$0" "$@"
+
+INDEX="0x1008"
+
+RED="\033[0;31m"
+GREEN="\033[0;32m"
+YELLOW="\033[1;33m"
+CYAN="\033[0;36m"
+NC="\033[0m"
+
+crc8() {
+    local data=("$@")
+    local crc=0
+    for byte in "${data[@]}"; do
+        b=$((16#$byte))
+        for ((i=0;i<8;i++)); do
+            mix=$(( (crc ^ b) & 1 ))
+            crc=$(( crc >> 1 ))
+            (( mix != 0 )) && crc=$(( crc ^ 0x8C ))
+            b=$(( b >> 1 ))
+        done
+    done
+    printf "%02x" $crc
+}
+
+to_le32() {
+    local val=$1
+    printf "%02x %02x %02x %02x" \
+        $(( val & 0xFF )) \
+        $(( (val >> 8) & 0xFF )) \
+        $(( (val >> 16) & 0xFF )) \
+        $(( (val >> 24) & 0xFF ))
+}
+
+detect_version() {
+    raw=$(tpmc read $INDEX 1 2>/dev/null)
+    byte=$(echo "$raw" | grep -oE '[0-9a-fA-F]{2}' | head -n1 | tr 'A-F' 'a-f')
+    [[ "$byte" == "02" ]] && echo "V0" && return
+    [[ "$byte" == "10" ]] && echo "V1" && return
+    echo "UNKNOWN"
+}
+
+build_struct() {
+    local version=$1
+    local kernver=$2
+
+    if [[ "$version" == "V0" ]]; then
+        struct_version="02"
+        uid=("4c" "57" "52" "47")
+        kv=($(to_le32 "$kernver"))
+        reserved=("00" "00" "00")
+        crc="00"
+        full=("$struct_version" "${uid[@]}" "${kv[@]}" "${reserved[@]}" "$crc")
+        full[11]=$(crc8 "${full[@]:0:11}")
+    elif [[ "$version" == "V1" ]]; then
+        struct_version="10"
+        struct_size="28"
+        crc="00"
+        flags="00"
+        kv=($(to_le32 "$kernver"))
+        ec_hash=()
+        for ((i=0;i<32;i++)); do ec_hash+=("00"); done
+        full=("$struct_version" "$struct_size" "$crc" "$flags" "${kv[@]}" "${ec_hash[@]}")
+        full[2]=$(crc8 "${full[@]:3}")
+    else
+        return 1
+    fi
+
+    echo "${full[@]}"
+}
+
+write_kernver() {
+    clear
+    version=$(detect_version)
+
+    echo -e "${CYAN}Detected version:${NC} $version"
+    echo
+
+    if [[ "$version" == "UNKNOWN" ]]; then
+        echo -e "${RED}TPM read failed or index empty${NC}"
+        tpmc read $INDEX 1
+        echo
+        read -r _
+        return
+    fi
+
+    read -r -p "Enter kernver (hex): " val
+
+    if [[ ! "$val" =~ ^0x[0-9a-fA-F]+$ ]]; then
+        echo -e "${RED}Invalid format${NC}"
+        read -r _
+        return
+    fi
+
+    kernver=$((val))
+    bytes=($(build_struct "$version" "$kernver")) || return
+
+    echo
+    printf "%s " "${bytes[@]}"
+    echo -e "\n"
+
+    read -r -p "Confirm write? (y/N): " c
+    [[ "$c" != "y" ]] && return
+
+    tpmc write $INDEX "${bytes[@]}"
+    echo -e "${GREEN}Done${NC}"
+
+    read -r _
+}
+
+while true; do
+    clear
+    echo -e "${CYAN}R-Patch${NC}"
+    echo
+    echo "1) Set kernver"
+    echo "Q) Quit"
+    echo
+
+    read -r -p "Choice: " choice
+
+    case "$choice" in
+        1) write_kernver ;;
+        [Qq]) clear; exit 0 ;;
+    esac
+done
