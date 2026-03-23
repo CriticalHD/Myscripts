@@ -11,3 +11,6 @@ Oh how I hate this god forsaken script
 Basically patches platform hiearchy in vboot to allow tpmc write usage in vt2 without usb
 
 ````curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/R-Patch | bash````
+
+## AUB - Not Started
+Try finding a non invasive persistent auto update blocker -- Doing this mostly because daub bootloops too much
