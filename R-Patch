@@ -106,7 +106,7 @@ build_struct() {
 draw_header() {
     clear
     echo -e "${CYAN}================================${NC}"
-    echo -e "${CYAN}  ${BOLD}R-Patch v6.0${NC}  ${CYAN}·  CriticalHD${NC}"
+    echo -e "${CYAN}  ${BOLD}R-Patch v6.1${NC}  ${CYAN}·  CriticalHD${NC}"
     echo -e "${CYAN}================================${NC}"
     if is_fw_patched; then
         echo -e " Firmware : ${GREEN}PATCHED${NC}"
@@ -119,14 +119,13 @@ draw_header() {
     echo
 }
 
-find_ph_pattern() {
+scan_for_pattern() {
     local file="$1"
     python3 - "$file" <<'PYEOF'
 import sys
 with open(sys.argv[1],'rb') as f: d=f.read()
 
-# Show all occurrences of TPM_RH_PLATFORM (0x4000000C) with 24 bytes of context
-# so we can see the actual session format used in this firmware build
+# Search entire file for TPM_RH_PLATFORM (0x4000000C) big-endian
 t=bytes([0x40,0x00,0x00,0x0C])
 hits=[]
 for i in range(len(d)-4):
@@ -138,6 +137,16 @@ for i in hits[:20]:
     before=d[max(0,i-12):i].hex(' ')
     after=d[i:i+28].hex(' ')
     print(f"  0x{i:08x}: ...{before} | {after}")
+
+# Also search for TPM_CC_HIERARCHY_CONTROL (0x00000121)
+cc=bytes([0x00,0x00,0x01,0x21])
+cc_hits=[]
+for i in range(len(d)-4):
+    if d[i:i+4]==cc:
+        cc_hits.append(i)
+print(f"  TPM_CC_HIERARCHY_CONTROL hits: {len(cc_hits)}")
+for i in cc_hits[:10]:
+    print(f"  0x{i:08x}: {d[max(0,i-4):i+20].hex(' ')}")
 PYEOF
 }
 
@@ -146,22 +155,22 @@ patch_region() {
     python3 - "$file" "$out" <<'PYEOF'
 import sys
 with open(sys.argv[1],'rb') as f: d=bytearray(f.read())
-# Full HierarchyControl command pattern with password session
+
+# Full HierarchyControl command with password session (from vboot tlcl source)
 full = bytes([
-    0x40,0x00,0x00,0x0C,          # authHandle=TPM_RH_PLATFORM
-    0x00,0x00,0x00,0x09,          # session size
-    0x40,0x00,0x00,0x09,          # TPM_RS_PW
-    0x00,0x00,0x01,0x00,0x00,     # nonce+attrs+auth
-    0x40,0x00,0x00,0x0C,          # enable=TPM_RH_PLATFORM
-    0x00                           # state=0 (disable) <-- patch this to 0x01
+    0x40,0x00,0x00,0x0C,      # authHandle=TPM_RH_PLATFORM
+    0x00,0x00,0x00,0x09,      # session area size=9
+    0x40,0x00,0x00,0x09,      # TPM_RS_PW
+    0x00,0x00,0x01,0x00,0x00, # nonce+attrs+auth
+    0x40,0x00,0x00,0x0C,      # enable=TPM_RH_PLATFORM
+    0x00                       # state=0 (disable) -> patch to 0x01
 ])
 n=0
 for i in range(len(d)-len(full)):
     if d[i:i+len(full)]==full:
-        # patch state byte (last byte) from 0 to 1
         d[i+len(full)-1]=0x01
         n+=1
-        print(f"      Patched {sys.argv[1]} at 0x{i:08x}")
+        print(f"      Patched at 0x{i:08x}")
 if n==0:
     print(f"      WARNING: pattern not found in {sys.argv[1]}")
 with open(sys.argv[2],'wb') as f: f.write(d)
@@ -223,7 +232,7 @@ patch_firmware() {
 
     echo -e "${CYAN}[1/5] Checking for python3...${NC}"
     if ! command -v python3 &>/dev/null; then
-        echo -e "${RED}      python3 not found. Run dev_install manually first, then retry.${NC}"
+        echo -e "${RED}      python3 not found. Run dev_install manually first.${NC}"
         read -r </dev/tty; return
     fi
     echo -e "${GREEN}      python3 ready.${NC}"
@@ -241,11 +250,10 @@ patch_firmware() {
         read -r </dev/tty; return
     fi
 
-    # Search for TPM_RH_PLATFORM (0x4000000C) hits and show context
-    echo -e "${YELLOW}      Scanning FW_MAIN_A for pattern...${NC}"
-    find_ph_pattern "$WORKDIR/FW_MAIN_A"
-    echo -e "${YELLOW}      Scanning FW_MAIN_B for pattern...${NC}"
-    find_ph_pattern "$WORKDIR/FW_MAIN_B"
+    echo -e "${YELLOW}      Scanning FW_MAIN_A...${NC}"
+    scan_for_pattern "$WORKDIR/FW_MAIN_A"
+    echo -e "${YELLOW}      Scanning FW_MAIN_B...${NC}"
+    scan_for_pattern "$WORKDIR/FW_MAIN_B"
 
     echo -e "${CYAN}[4/5] Patching firmware regions...${NC}"
     for region in FW_MAIN_A FW_MAIN_B; do
@@ -259,9 +267,20 @@ patch_firmware() {
     [[ $? -ne 0 ]] && { echo -e "${RED}      Failed to reassemble firmware!${NC}"; read -r </dev/tty; return; }
     echo -e "${GREEN}      Regions patched and reassembled.${NC}"
 
-    echo -e "${CYAN}[5/5] Re-signing firmware with dev keys...${NC}"
-    /usr/share/vboot/bin/make_dev_firmware.sh --nomod_hwid --nomod_gbb 2>/dev/null
-    [[ $? -ne 0 ]] && { echo -e "${RED}      Signing failed!${NC}"; read -r </dev/tty; return; }
+    # Sign fw.bin directly using devkeys — no live flash touch
+    echo -e "${CYAN}[5/5] Signing patched firmware with dev keys...${NC}"
+    local DEVKEYS="/usr/share/vboot/devkeys"
+    futility sign \
+        --signprivate "$DEVKEYS/firmware_data_key.vbprivk" \
+        --keyblock "$DEVKEYS/firmware.keyblock" \
+        --kernelkey "$DEVKEYS/kernel_subkey.vbpubk" \
+        --version 1 \
+        "$WORKDIR/fw.bin" 2>/dev/null
+    if [[ $? -ne 0 ]]; then
+        echo -e "${YELLOW}      futility sign failed, falling back to make_dev_firmware.sh...${NC}"
+        /usr/share/vboot/bin/make_dev_firmware.sh --nomod_hwid --nomod_gbb 2>/dev/null
+        [[ $? -ne 0 ]] && { echo -e "${RED}      Signing failed!${NC}"; read -r </dev/tty; return; }
+    fi
     echo -e "${GREEN}      Firmware signed successfully.${NC}"
 
     echo
