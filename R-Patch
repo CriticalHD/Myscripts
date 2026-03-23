@@ -155,8 +155,8 @@ change_rollback() {
     echo -e " ${YELLOW}3${NC}) KV3 — boots R120+"
     echo -e " ${YELLOW}4${NC}) KV4 — boots R125+"
     echo -e " ${YELLOW}5${NC}) KV5 — boots R133+"
-    echo -e " ${YELLOW}6${NC}) KV6"
-    echo -e " ${YELLOW}7${NC}) KV7"
+    echo -e " ${YELLOW}6${NC}) KV6 — boots R138+"
+    echo -e " ${YELLOW}7${NC}) KV7 — boots R144+"
     echo -e " ${YELLOW}B${NC}) Back"
     echo -n "> "; read -r kv </dev/tty
     [[ "$kv" =~ ^[Bb]$ ]] && return
