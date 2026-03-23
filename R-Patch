@@ -125,45 +125,19 @@ find_ph_pattern() {
 import sys
 with open(sys.argv[1],'rb') as f: d=f.read()
 
-# The HierarchyControl packet structure (vboot tlcl):
-# 80 02 (TPM_ST_SESSIONS)
-# 00 00 00 XX (size)
-# 00 00 01 21 (TPM2_CC_HIERARCHY_CONTROL)
-# 40 00 00 0C (authHandle=TPM_RH_PLATFORM)
-# [9 byte password session: 00 00 00 09 40 00 00 09 00 00 01 00 00]
-# 40 00 00 0C (enable=TPM_RH_PLATFORM)
-# 00          (state=NO/disable)
-
-# Search for the full unique pattern across both parts
-# authHandle + session + enable + state
-# 40 00 00 0C [session bytes] 40 00 00 0C 00
-# Session is: 00 00 00 09 40 00 00 09 00 00 01 00 00 (13 bytes)
-full = bytes([
-    0x40,0x00,0x00,0x0C,          # authHandle=TPM_RH_PLATFORM
-    0x00,0x00,0x00,0x09,          # session size
-    0x40,0x00,0x00,0x09,          # TPM_RS_PW
-    0x00,0x00,0x01,0x00,0x00,     # nonce+attrs+auth
-    0x40,0x00,0x00,0x0C,          # enable=TPM_RH_PLATFORM
-    0x00                           # state=0 (disable)
-])
-
+# Show all occurrences of TPM_RH_PLATFORM (0x4000000C) with 24 bytes of context
+# so we can see the actual session format used in this firmware build
+t=bytes([0x40,0x00,0x00,0x0C])
 hits=[]
-for i in range(len(d)-len(full)):
-    if d[i:i+len(full)]==full:
+for i in range(len(d)-4):
+    if d[i:i+4]==t:
         hits.append(i)
-        print(f"  HIT at 0x{i:08x}: {d[max(0,i-4):i+len(full)+4].hex(' ')}")
 
-# Also try shorter unique tail
-tail = bytes([0x40,0x00,0x00,0x0C,0x00,0x00,0x00,0x09,0x40,0x00,0x00,0x09])
-tail_hits=[]
-for i in range(len(d)-len(tail)):
-    if d[i:i+len(tail)]==tail:
-        tail_hits.append(i)
-
-print(f"  Full pattern hits: {len(hits)}")
-print(f"  Partial session pattern hits: {len(tail_hits)}")
-for i in tail_hits[:5]:
-    print(f"    0x{i:08x}: {d[max(0,i-4):i+len(tail)+8].hex(' ')}")
+print(f"  TPM_RH_PLATFORM hits: {len(hits)}")
+for i in hits[:20]:
+    before=d[max(0,i-12):i].hex(' ')
+    after=d[i:i+28].hex(' ')
+    print(f"  0x{i:08x}: ...{before} | {after}")
 PYEOF
 }
 
@@ -249,12 +223,8 @@ patch_firmware() {
 
     echo -e "${CYAN}[1/5] Checking for python3...${NC}"
     if ! command -v python3 &>/dev/null; then
-        echo -e "${YELLOW}      Running dev_install...${NC}"
-        dev_install --yes 2>/dev/null
-        if ! command -v python3 &>/dev/null; then
-            echo -e "${RED}      python3 not available.${NC}"
-            read -r </dev/tty; return
-        fi
+        echo -e "${RED}      python3 not found. Run dev_install manually first, then retry.${NC}"
+        read -r </dev/tty; return
     fi
     echo -e "${GREEN}      python3 ready.${NC}"
 
