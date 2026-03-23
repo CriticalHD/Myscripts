@@ -10,7 +10,7 @@ YELLOW="\033[1;33m"
 CYAN="\033[0;36m"
 BOLD="\033[1m"
 NC="\033[0m"
-
+# hi
 stop_tpm_daemon() {
     if [[ "$TPM_VER" == "1.2" ]]; then
         sudo initctl stop tcsd 2>/dev/null
@@ -106,7 +106,7 @@ build_struct() {
 draw_header() {
     clear
     echo -e "${CYAN}================================${NC}"
-    echo -e "${CYAN}  ${BOLD}R-Patch v6.1${NC}  ${CYAN}·  CriticalHD${NC}"
+    echo -e "${CYAN}  ${BOLD}R-Patch v6.2${NC}  ${CYAN}·  CriticalHD${NC}"
     echo -e "${CYAN}================================${NC}"
     if is_fw_patched; then
         echo -e " Firmware : ${GREEN}PATCHED${NC}"
@@ -190,8 +190,8 @@ change_rollback() {
     echo -e " ${YELLOW}3${NC}) KV3 — boots R120+"
     echo -e " ${YELLOW}4${NC}) KV4 — boots R125+"
     echo -e " ${YELLOW}5${NC}) KV5 — boots R133+"
-    echo -e " ${YELLOW}6${NC}) KV6"
-    echo -e " ${YELLOW}7${NC}) KV7"
+    echo -e " ${YELLOW}6${NC}) KV6 — boots R138+"
+    echo -e " ${YELLOW}7${NC}) KV7 — boots R144+"
     echo -e " ${YELLOW}B${NC}) Back"
     echo -n "> "; read -r kv </dev/tty
     [[ "$kv" =~ ^[Bb]$ ]] && return
