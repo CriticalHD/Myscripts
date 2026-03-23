@@ -45,7 +45,6 @@ get_info() {
         *)    STRUCT_VER="?"  ;;
     esac
 
-    # Parse kernver number from raw bytes
     local b=($raw)
     if [[ "$STRUCT_VER" == "V0" ]]; then
         local lo=$((16#${b[5]:-0})) hi=$((16#${b[7]:-0}))
@@ -59,7 +58,7 @@ get_info() {
         KV_NUM="?"
     fi
 
-    # Platform hierarchy status
+    # Platform hierarchy — needs daemon stopped
     local vf=$(tpmc getvf 2>/dev/null)
     if echo "$vf" | grep -q "phEnable 1"; then
         PH_STATUS="${GREEN}Enabled${NC}"
@@ -69,7 +68,7 @@ get_info() {
         PH_STATUS="${YELLOW}Unknown${NC}"
     fi
 
-    # Root filesystem writable status
+    # Root rw/ro
     if mount | grep -q "on / .*rw"; then
         ROOT_RW="${GREEN}rw${NC}"
     else
@@ -85,7 +84,7 @@ is_fw_patched() { [[ -f "$PATCH_FLAG" ]]; }
 draw_header() {
     clear
     echo -e "${CYAN}================================${NC}"
-    echo -e "${CYAN}  ${BOLD}R-Patch v6.2${NC}  ${CYAN}·  CriticalHD${NC}"
+    echo -e "${CYAN}  ${BOLD}R-Patch v6.3${NC}  ${CYAN}·  CriticalHD${NC}"
     echo -e "${CYAN}================================${NC}"
     if is_fw_patched; then
         echo -e " Firmware  : ${GREEN}PATCHED${NC}"
@@ -96,13 +95,13 @@ draw_header() {
     echo -e " GSC       : ${CYAN}${GSC_TYPE}${NC}"
     echo -e " Kernver   : ${YELLOW}KV${KV_NUM}${NC}"
     echo -e " Struct    : ${CYAN}${STRUCT_VER}${NC}"
-    echo -e " Plat. Hier: $(echo -e $PH_STATUS)"
+    echo -e " Plat.Hier : $(echo -e $PH_STATUS)"
     echo -e " Root      : $(echo -e $ROOT_RW)"
     echo -e "${CYAN}================================${NC}"
     echo
 }
 
-# ─── CRC / Struct Helpers ────────────────────────────────────────────────────
+# ─── CRC / Struct ────────────────────────────────────────────────────────────
 to_le32() {
     local v=$1
     printf "%02x %02x %02x %02x" \
@@ -141,7 +140,7 @@ build_struct() {
     echo "${full[@]}"
 }
 
-# ─── Kernver Switcher ─────────────────────────────────────────────────────────
+# ─── Kernver Switcher ────────────────────────────────────────────────────────
 change_rollback() {
     if ! is_fw_patched; then
         echo -e "${RED}Patch firmware first (option 2).${NC}"
@@ -181,147 +180,174 @@ change_rollback() {
         get_info
     else
         echo -e "${RED}Write failed (code $rc).${NC}"
-        echo -e "${YELLOW}Try rebooting and running again, or check platform hierarchy status.${NC}"
+        echo -e "${YELLOW}Check platform hierarchy status in header.${NC}"
     fi
     read -r </dev/tty
 }
 
-# ─── Firmware Patcher ────────────────────────────────────────────────────────
+# ─── Firmware Scanner ────────────────────────────────────────────────────────
 scan_fw() {
     local file="$1"
     python3 - "$file" <<'PYEOF'
 import sys
 with open(sys.argv[1],'rb') as f: d=f.read()
-t=bytes([0x40,0x00,0x00,0x0C])
-hits=[]
-for i in range(len(d)-4):
-    if d[i:i+4]==t: hits.append(i)
-print(f"  TPM_RH_PLATFORM hits: {len(hits)}")
-for i in hits[:20]:
-    print(f"  0x{i:08x}: ...{d[max(0,i-12):i].hex(' ')} | {d[i:i+28].hex(' ')}")
+
+# Search big-endian (network byte order used in TPM packets)
+be=bytes([0x40,0x00,0x00,0x0C])
+# Search little-endian (how x86-64 compiler stores immediates in .rodata/stack)
+le=bytes([0x0C,0x00,0x00,0x40])
+# TPM_CC_HIERARCHY_CONTROL big-endian
 cc=bytes([0x00,0x00,0x01,0x21])
-cc_hits=[]
-for i in range(len(d)-4):
-    if d[i:i+4]==cc: cc_hits.append(i)
-print(f"  TPM_CC_HIERARCHY_CONTROL hits: {len(cc_hits)}")
-for i in cc_hits[:10]:
-    print(f"  0x{i:08x}: {d[max(0,i-4):i+20].hex(' ')}")
+# little-endian
+cc_le=bytes([0x21,0x01,0x00,0x00])
+
+results={}
+for label,pat in [("TPM_RH_PLATFORM BE",be),("TPM_RH_PLATFORM LE",le),
+                  ("TPM_CC_HIER_CTRL BE",cc),("TPM_CC_HIER_CTRL LE",cc_le)]:
+    hits=[]
+    for i in range(len(d)-4):
+        if d[i:i+4]==pat: hits.append(i)
+    results[label]=hits
+    print(f"  {label}: {len(hits)} hit(s)")
+    for i in hits[:5]:
+        print(f"    0x{i:08x}: ...{d[max(0,i-8):i].hex(' ')} | {d[i:i+20].hex(' ')}")
 PYEOF
 }
 
+# ─── Firmware Patcher ────────────────────────────────────────────────────────
 patch_region() {
     local file="$1" out="$2"
     python3 - "$file" "$out" <<'PYEOF'
 import sys
 with open(sys.argv[1],'rb') as f: d=bytearray(f.read())
-full=bytes([
-    0x40,0x00,0x00,0x0C,
-    0x00,0x00,0x00,0x09,
-    0x40,0x00,0x00,0x09,
-    0x00,0x00,0x01,0x00,0x00,
-    0x40,0x00,0x00,0x0C,
-    0x00
+
+# Try all known patterns for TlclLockPhysicalPresence / marshal_hierarchy_control
+# Pattern A: big-endian TPM packet with password session (vboot tpm2_lite)
+patA=bytes([
+    0x40,0x00,0x00,0x0C,      # authHandle=TPM_RH_PLATFORM BE
+    0x00,0x00,0x00,0x09,      # session size
+    0x40,0x00,0x00,0x09,      # TPM_RS_PW
+    0x00,0x00,0x01,0x00,0x00, # nonce+attrs+auth
+    0x40,0x00,0x00,0x0C,      # enable=TPM_RH_PLATFORM BE
+    0x00                       # state=0 -> patch to 1
 ])
+# Pattern B: x86 mov immediate sequence — compiler may store 0x4000000C as LE
+# mov dword [rbp-X], 0x4000000c -> C7 45 XX 0C 00 00 40
+patB=bytes([0xC7,0x45])  # prefix only, we check for 0C 00 00 40 after offset byte
+# Pattern C: mov edi/esi, 0x4000000c -> BF/BE 0C 00 00 40
+patC_edi=bytes([0xBF,0x0C,0x00,0x00,0x40])
+patC_esi=bytes([0xBE,0x0C,0x00,0x00,0x40])
+# Pattern D: mov eax, 0x4000000c -> B8 0C 00 00 40
+patD=bytes([0xB8,0x0C,0x00,0x00,0x40])
+
 n=0
-for i in range(len(d)-len(full)):
-    if d[i:i+len(full)]==full:
-        d[i+len(full)-1]=0x01; n+=1
-        print(f"  Patched at 0x{i:08x}")
+
+# Try pattern A first (full TPM packet)
+for i in range(len(d)-len(patA)):
+    if d[i:i+len(patA)]==patA:
+        d[i+len(patA)-1]=0x01; n+=1
+        print(f"  PatternA hit at 0x{i:08x} — patched state byte")
+
+# Try x86 register load patterns
+for label,pat in [("PatternC(edi)",patC_edi),("PatternC(esi)",patC_esi),("PatternD(eax)",patD)]:
+    for i in range(len(d)-len(pat)):
+        if d[i:i+len(pat)]==pat:
+            print(f"  {label} hit at 0x{i:08x} — context: {d[max(0,i-4):i+20].hex(' ')}")
+            # Don't auto-patch register loads — we need more context
+            # Just report for now
+
+# Pattern B: C7 45 XX 0C 00 00 40
+for i in range(len(d)-6):
+    if d[i]==0xC7 and d[i+1]==0x45 and d[i+3:i+7]==bytes([0x0C,0x00,0x00,0x40]):
+        print(f"  PatternB(mov[rbp]) hit at 0x{i:08x} — context: {d[max(0,i-4):i+16].hex(' ')}")
+
 if n==0:
-    print(f"  WARNING: pattern not found in {sys.argv[1]}")
+    print(f"  No patchable pattern found in {sys.argv[1]}")
+
 with open(sys.argv[2],'wb') as f: f.write(d)
 PYEOF
 }
 
 patch_firmware() {
     echo -e "${YELLOW}Patches firmware to keep platform hierarchy enabled.${NC}"
-    echo -e "${RED}Brick risk. Ensure SPI WP is off before continuing.${NC}"
+    echo -e "${RED}Brick risk. Ensure SPI WP is off.${NC}"
     echo -n "Continue? (y/N): "; read -r c </dev/tty
     [[ "$c" != "y" && "$c" != "Y" ]] && return
 
-    # Check python3
+    # python3 check
     if ! command -v python3 &>/dev/null; then
         echo -e "${RED}python3 not found. Run dev_install manually first.${NC}"
         read -r </dev/tty; return
     fi
 
-    # Check/remount stateful partition rw+exec
+    # Workspace
     echo -e "${CYAN}[1/5] Preparing workspace...${NC}"
     mkdir -p "$WORKDIR"
     if ! mount | grep -q "stateful_partition.*rw"; then
         sudo mount -o remount,rw,exec /mnt/stateful_partition 2>/dev/null
-        [[ $? -ne 0 ]] && { echo -e "${RED}      Cannot remount stateful partition rw.${NC}"; read -r </dev/tty; return; }
+        [[ $? -ne 0 ]] && { echo -e "${RED}      Cannot remount stateful rw.${NC}"; read -r </dev/tty; return; }
     fi
-    echo -e "${GREEN}      Workspace ready at $WORKDIR${NC}"
+    echo -e "${GREEN}      Ready.${NC}"
 
-    # Check SPI WP
+    # SPI WP check
     echo -e "${CYAN}[2/5] Checking SPI write protection...${NC}"
-    local wp_status=$(flashrom -p internal --wp-status 2>/dev/null)
-    if echo "$wp_status" | grep -qi "Protection mode: hardware"; then
-        echo -e "${RED}      SPI hardware WP is ON. Cannot flash.${NC}"
-        echo -e "${YELLOW}      Disable hardware WP and retry.${NC}"
+    local wp=$(flashrom -p internal --wp-status 2>/dev/null)
+    if echo "$wp" | grep -qi "Protection mode: hardware"; then
+        echo -e "${RED}      Hardware WP is ON. Disable it first.${NC}"
         read -r </dev/tty; return
-    elif echo "$wp_status" | grep -qi "Protection mode: disabled\|WP: status: 0"; then
-        echo -e "${GREEN}      SPI WP is off.${NC}"
+    elif echo "$wp" | grep -qi "disabled\|WP: status: 0\|Protection mode: disabled"; then
+        echo -e "${GREEN}      WP off.${NC}"
     else
-        echo -e "${YELLOW}      WP status unclear: ${wp_status}${NC}"
-        echo -n "      Continue anyway? (y/N): "; read -r c </dev/tty
+        echo -e "${YELLOW}      WP status unclear. Continue? (y/N):${NC} "; read -r c </dev/tty
         [[ "$c" != "y" && "$c" != "Y" ]] && return
     fi
 
-    # Dump firmware
+    # Dump
     echo -e "${CYAN}[3/5] Reading firmware...${NC}"
     flashrom -p internal -r "$WORKDIR/fw.bin" 2>/dev/null
-    if [[ $? -ne 0 ]]; then
-        echo -e "${RED}      Dump failed.${NC}"
-        read -r </dev/tty; return
-    fi
-    echo -e "${GREEN}      Dumped to $WORKDIR/fw.bin${NC}"
+    [[ $? -ne 0 ]] && { echo -e "${RED}      Dump failed.${NC}"; read -r </dev/tty; return; }
+    echo -e "${GREEN}      Done.${NC}"
 
-    # Extract and scan regions
-    echo -e "${CYAN}[4/5] Scanning and patching regions...${NC}"
+    # Extract + scan + patch
+    echo -e "${CYAN}[4/5] Scanning and patching...${NC}"
     cd "$WORKDIR"
     futility dump_fmap -x fw.bin FW_MAIN_A FW_MAIN_B 2>/dev/null
     if [[ ! -f "$WORKDIR/FW_MAIN_A" || ! -f "$WORKDIR/FW_MAIN_B" ]]; then
-        echo -e "${RED}      Failed to extract firmware regions.${NC}"
+        echo -e "${RED}      Region extraction failed.${NC}"
         read -r </dev/tty; return
     fi
 
-    echo -e "${YELLOW}      Scanning FW_MAIN_A...${NC}"
-    scan_fw "$WORKDIR/FW_MAIN_A"
-    echo -e "${YELLOW}      Scanning FW_MAIN_B...${NC}"
-    scan_fw "$WORKDIR/FW_MAIN_B"
-
-    local patched=0
+    local found_patch=0
     for region in FW_MAIN_A FW_MAIN_B; do
+        echo -e "${YELLOW}      Scanning ${region}...${NC}"
+        scan_fw "$WORKDIR/$region"
         patch_region "$WORKDIR/$region" "$WORKDIR/${region}.p"
-        if grep -q "Patched at" <(patch_region "$WORKDIR/$region" "$WORKDIR/${region}.p" 2>&1); then
-            patched=1
+        if grep -q "hit at" <(patch_region "$WORKDIR/$region" "$WORKDIR/${region}.p" 2>&1); then
+            found_patch=1
         fi
         cp "$WORKDIR/${region}.p" "$WORKDIR/$region"
     done
 
-    if [[ $patched -eq 0 ]]; then
+    if [[ $found_patch -eq 0 ]]; then
         echo -e "${RED}      Pattern not found in any region.${NC}"
-        echo -e "${YELLOW}      Force flash anyway? (f) or Return? (R)${NC}"
+        echo -e "${YELLOW}      (f) Force flash anyway  (R) Return${NC}"
         echo -n "      > "; read -r fc </dev/tty
         [[ "$fc" != "f" && "$fc" != "F" ]] && return
-        echo -e "${YELLOW}      Continuing with unpatched firmware (force).${NC}"
     fi
 
     futility load_fmap "$WORKDIR/fw.bin" \
         "FW_MAIN_A:$WORKDIR/FW_MAIN_A" \
         "FW_MAIN_B:$WORKDIR/FW_MAIN_B" 2>/dev/null
     if [[ $? -ne 0 ]]; then
-        echo -e "${RED}      Failed to reassemble firmware.${NC}"
-        echo -e "${YELLOW}      Force flash anyway? (f) or Return? (R)${NC}"
+        echo -e "${RED}      Reassembly failed.${NC}"
+        echo -e "${YELLOW}      (f) Force  (R) Return${NC}"
         echo -n "      > "; read -r fc </dev/tty
         [[ "$fc" != "f" && "$fc" != "F" ]] && return
     fi
-    echo -e "${GREEN}      Regions reassembled.${NC}"
+    echo -e "${GREEN}      Reassembled.${NC}"
 
     # Sign
-    echo -e "${CYAN}[5/5] Signing firmware...${NC}"
+    echo -e "${CYAN}[5/5] Signing...${NC}"
     futility sign \
         --signprivate "$DEVKEYS/firmware_data_key.vbprivk" \
         --keyblock "$DEVKEYS/firmware.keyblock" \
@@ -329,11 +355,11 @@ patch_firmware() {
         --version 1 \
         "$WORKDIR/fw.bin" 2>/dev/null
     if [[ $? -ne 0 ]]; then
-        echo -e "${YELLOW}      futility sign failed. Falling back to make_dev_firmware.sh...${NC}"
+        echo -e "${YELLOW}      futility sign failed, trying make_dev_firmware.sh...${NC}"
         /usr/share/vboot/bin/make_dev_firmware.sh --nomod_hwid --nomod_gbb 2>/dev/null
         if [[ $? -ne 0 ]]; then
             echo -e "${RED}      Signing failed.${NC}"
-            echo -e "${YELLOW}      Force flash unsigned? (f) or Return? (R)${NC}"
+            echo -e "${YELLOW}      (f) Force flash unsigned  (R) Return${NC}"
             echo -n "      > "; read -r fc </dev/tty
             [[ "$fc" != "f" && "$fc" != "F" ]] && return
         fi
@@ -342,7 +368,7 @@ patch_firmware() {
 
     # Flash
     echo
-    echo -e "${RED}Point of no return. Flash patched firmware?${NC}"
+    echo -e "${RED}Point of no return.${NC}"
     echo -n "Flash? (y/N): "; read -r c </dev/tty
     [[ "$c" != "y" && "$c" != "Y" ]] && { echo "Aborted."; read -r </dev/tty; return; }
 
@@ -361,23 +387,22 @@ patch_firmware() {
 show_credits() {
     clear
     echo -e "${CYAN}================================${NC}"
-    echo -e "${CYAN}          R-Patch v6.2${NC}"
+    echo -e "${CYAN}          R-Patch v6.3${NC}"
     echo -e "${CYAN}================================${NC}"
     echo -e " ${BOLD}Code${NC}       : CriticalHD"
-    echo -e " ${BOLD}AI Assist${NC}  : Claude (Anthropic)"
+    echo -e " ${BOLD}AI Assist${NC}  : Claude"
     echo -e " ${BOLD}KVS Ref${NC}    : kxtzownsu"
     echo -e " ${BOLD}CrOS Tools${NC} : Google (tpmc, futility, flashrom)"
-    echo -e " ${BOLD}Thanks${NC}     : codenerd67, kxtz, Sh1mmer team"
+    echo -e " ${BOLD}Thanks${NC}     : codenerd67, Sh1mmer team"
     echo -e "${CYAN}================================${NC}"
     echo
     echo "Press Enter to return..."
     read -r </dev/tty
 }
 
-# ─── Init ─────────────────────────────────────────────────────────────────────
+# ─── Init + Loop ─────────────────────────────────────────────────────────────
 get_info
 
-# ─── Main Loop ───────────────────────────────────────────────────────────────
 while true; do
     draw_header
     if is_fw_patched; then
@@ -397,4 +422,3 @@ while true; do
         *) echo -e "${RED}Invalid.${NC}"; sleep 1 ;;
     esac
 done
-
