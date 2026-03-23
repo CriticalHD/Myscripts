@@ -58,7 +58,6 @@ get_info() {
         KV_NUM="?"
     fi
 
-    # Platform hierarchy — needs daemon stopped
     local vf=$(tpmc getvf 2>/dev/null)
     if echo "$vf" | grep -q "phEnable 1"; then
         PH_STATUS="${GREEN}Enabled${NC}"
@@ -66,13 +65,6 @@ get_info() {
         PH_STATUS="${RED}Disabled${NC}"
     else
         PH_STATUS="${YELLOW}Unknown${NC}"
-    fi
-
-    # Root rw/ro
-    if mount | grep -q "on / .*rw"; then
-        ROOT_RW="${GREEN}rw${NC}"
-    else
-        ROOT_RW="${RED}ro${NC}"
     fi
 
     start_tpm_daemon
@@ -84,7 +76,7 @@ is_fw_patched() { [[ -f "$PATCH_FLAG" ]]; }
 draw_header() {
     clear
     echo -e "${CYAN}================================${NC}"
-    echo -e "${CYAN}  ${BOLD}R-Patch v6.3${NC}  ${CYAN}·  CriticalHD${NC}"
+    echo -e "${CYAN}  ${BOLD}R-Patch v6.4${NC}  ${CYAN}·  CriticalHD${NC}"
     echo -e "${CYAN}================================${NC}"
     if is_fw_patched; then
         echo -e " Firmware  : ${GREEN}PATCHED${NC}"
@@ -96,7 +88,6 @@ draw_header() {
     echo -e " Kernver   : ${YELLOW}KV${KV_NUM}${NC}"
     echo -e " Struct    : ${CYAN}${STRUCT_VER}${NC}"
     echo -e " Plat.Hier : $(echo -e $PH_STATUS)"
-    echo -e " Root      : $(echo -e $ROOT_RW)"
     echo -e "${CYAN}================================${NC}"
     echo
 }
@@ -192,22 +183,33 @@ scan_fw() {
 import sys
 with open(sys.argv[1],'rb') as f: d=f.read()
 
-# Search big-endian (network byte order used in TPM packets)
-be=bytes([0x40,0x00,0x00,0x0C])
-# Search little-endian (how x86-64 compiler stores immediates in .rodata/stack)
-le=bytes([0x0C,0x00,0x00,0x40])
-# TPM_CC_HIERARCHY_CONTROL big-endian
-cc=bytes([0x00,0x00,0x01,0x21])
-# little-endian
-cc_le=bytes([0x21,0x01,0x00,0x00])
+# TPM_RH_PLATFORM = 0x4000000C
+# TPM_CC_HIERARCHY_CONTROL = 0x00000121
+# On x86-64, values stored as little-endian immediates in mov instructions
 
-results={}
-for label,pat in [("TPM_RH_PLATFORM BE",be),("TPM_RH_PLATFORM LE",le),
-                  ("TPM_CC_HIER_CTRL BE",cc),("TPM_CC_HIER_CTRL LE",cc_le)]:
+patterns = {
+    "TPM_RH_PLATFORM BE":   bytes([0x40,0x00,0x00,0x0C]),
+    "TPM_RH_PLATFORM LE":   bytes([0x0C,0x00,0x00,0x40]),
+    "TPM_CC_HIER_CTRL BE":  bytes([0x00,0x00,0x01,0x21]),
+    "TPM_CC_HIER_CTRL LE":  bytes([0x21,0x01,0x00,0x00]),
+    # x86: mov dword [rsp+N], 0x4000000c  -> C7 44 24 XX 0C 00 00 40
+    "MOV[rsp+N]=PH":        bytes([0xC7,0x44,0x24]),
+    # x86: mov dword [rbp-N], 0x4000000c -> C7 45 XX 0C 00 00 40
+    "MOV[rbp-N]=PH":        bytes([0xC7,0x45]),
+}
+
+for label,pat in patterns.items():
     hits=[]
-    for i in range(len(d)-4):
-        if d[i:i+4]==pat: hits.append(i)
-    results[label]=hits
+    for i in range(len(d)-len(pat)-4):
+        chunk=d[i:i+len(pat)]
+        if chunk==pat:
+            # For mov patterns, check if 0x4000000c follows the offset byte
+            if label in ("MOV[rsp+N]=PH","MOV[rbp-N]=PH"):
+                after=d[i+len(pat)+1:i+len(pat)+5]
+                if after==bytes([0x0C,0x00,0x00,0x40]):
+                    hits.append(i)
+            else:
+                hits.append(i)
     print(f"  {label}: {len(hits)} hit(s)")
     for i in hits[:5]:
         print(f"    0x{i:08x}: ...{d[max(0,i-8):i].hex(' ')} | {d[i:i+20].hex(' ')}")
@@ -220,49 +222,66 @@ patch_region() {
     python3 - "$file" "$out" <<'PYEOF'
 import sys
 with open(sys.argv[1],'rb') as f: d=bytearray(f.read())
-
-# Try all known patterns for TlclLockPhysicalPresence / marshal_hierarchy_control
-# Pattern A: big-endian TPM packet with password session (vboot tpm2_lite)
-patA=bytes([
-    0x40,0x00,0x00,0x0C,      # authHandle=TPM_RH_PLATFORM BE
-    0x00,0x00,0x00,0x09,      # session size
-    0x40,0x00,0x00,0x09,      # TPM_RS_PW
-    0x00,0x00,0x01,0x00,0x00, # nonce+attrs+auth
-    0x40,0x00,0x00,0x0C,      # enable=TPM_RH_PLATFORM BE
-    0x00                       # state=0 -> patch to 1
-])
-# Pattern B: x86 mov immediate sequence — compiler may store 0x4000000C as LE
-# mov dword [rbp-X], 0x4000000c -> C7 45 XX 0C 00 00 40
-patB=bytes([0xC7,0x45])  # prefix only, we check for 0C 00 00 40 after offset byte
-# Pattern C: mov edi/esi, 0x4000000c -> BF/BE 0C 00 00 40
-patC_edi=bytes([0xBF,0x0C,0x00,0x00,0x40])
-patC_esi=bytes([0xBE,0x0C,0x00,0x00,0x40])
-# Pattern D: mov eax, 0x4000000c -> B8 0C 00 00 40
-patD=bytes([0xB8,0x0C,0x00,0x00,0x40])
-
 n=0
 
-# Try pattern A first (full TPM packet)
+# ── Pattern A: full big-endian TPM packet with password session ──
+patA=bytes([
+    0x40,0x00,0x00,0x0C,       # authHandle=TPM_RH_PLATFORM
+    0x00,0x00,0x00,0x09,       # session size
+    0x40,0x00,0x00,0x09,       # TPM_RS_PW
+    0x00,0x00,0x01,0x00,0x00,  # nonce+attrs+auth
+    0x40,0x00,0x00,0x0C,       # enable=TPM_RH_PLATFORM
+    0x00                        # state=0 -> patch to 1
+])
 for i in range(len(d)-len(patA)):
     if d[i:i+len(patA)]==patA:
         d[i+len(patA)-1]=0x01; n+=1
-        print(f"  PatternA hit at 0x{i:08x} — patched state byte")
+        print(f"  PatA hit 0x{i:08x} — patched state byte")
 
-# Try x86 register load patterns
-for label,pat in [("PatternC(edi)",patC_edi),("PatternC(esi)",patC_esi),("PatternD(eax)",patD)]:
-    for i in range(len(d)-len(pat)):
-        if d[i:i+len(pat)]==pat:
-            print(f"  {label} hit at 0x{i:08x} — context: {d[max(0,i-4):i+20].hex(' ')}")
-            # Don't auto-patch register loads — we need more context
-            # Just report for now
+# ── Pattern B: mov dword [rsp+N], 0x4000000c followed by state write ──
+# C7 44 24 XX 0C 00 00 40  (enable=TPM_RH_PLATFORM stored on stack)
+# The state byte (0x00) is typically stored in a nearby mov byte instruction
+# We find the enable store, then look ahead for: C6 44 24 YY 00 (mov byte [rsp+Y], 0)
+# and patch that 0x00 to 0x01
+for i in range(len(d)-20):
+    if (d[i]==0xC7 and d[i+1]==0x44 and d[i+2]==0x24 and
+            d[i+4:i+8]==bytes([0x0C,0x00,0x00,0x40])):
+        # Found enable=TPM_RH_PLATFORM on stack, now look ahead up to 32 bytes
+        # for the state byte store: C6 44 24 XX 00
+        for j in range(i+8, min(i+40, len(d)-5)):
+            if (d[j]==0xC6 and d[j+1]==0x44 and d[j+2]==0x24 and d[j+4]==0x00):
+                d[j+4]=0x01; n+=1
+                print(f"  PatB hit 0x{i:08x} (enable) + 0x{j:08x} (state) — patched")
+                break
 
-# Pattern B: C7 45 XX 0C 00 00 40
-for i in range(len(d)-6):
-    if d[i]==0xC7 and d[i+1]==0x45 and d[i+3:i+7]==bytes([0x0C,0x00,0x00,0x40]):
-        print(f"  PatternB(mov[rbp]) hit at 0x{i:08x} — context: {d[max(0,i-4):i+16].hex(' ')}")
+# ── Pattern C: mov dword [rbp-N], 0x4000000c ──
+# C7 45 XX 0C 00 00 40
+for i in range(len(d)-20):
+    if (d[i]==0xC7 and d[i+1]==0x45 and
+            d[i+3:i+7]==bytes([0x0C,0x00,0x00,0x40])):
+        # Look ahead for state byte: C6 45 XX 00
+        for j in range(i+7, min(i+40, len(d)-4)):
+            if (d[j]==0xC6 and d[j+1]==0x45 and d[j+3]==0x00):
+                d[j+3]=0x01; n+=1
+                print(f"  PatC hit 0x{i:08x} (enable) + 0x{j:08x} (state) — patched")
+                break
+
+# ── Pattern D: mov edi/esi/eax, 0x4000000c (register load) ──
+# BF/BE/B8 0C 00 00 40
+for prefix in [0xBF, 0xBE, 0xB8]:
+    pat=bytes([prefix,0x0C,0x00,0x00,0x40])
+    for i in range(len(d)-20):
+        if d[i:i+5]==pat:
+            # State is likely xor'd or mov'd to 0 nearby — look for xor or mov 0
+            # xor reg,reg near the enable load is a common pattern for state=0
+            # Most likely: xor edx,edx (31 D2) or mov edx,0 (BA 00 00 00 00)
+            ctx=d[i:i+30]
+            print(f"  PatD hit 0x{i:08x} prefix=0x{prefix:02x} — context: {ctx.hex(' ')}")
+            # Report only — auto-patching register loads needs disassembly
 
 if n==0:
-    print(f"  No patchable pattern found in {sys.argv[1]}")
+    print(f"  No auto-patchable pattern found in {sys.argv[1]}")
+    print(f"  Check PatD hits above for manual analysis")
 
 with open(sys.argv[2],'wb') as f: f.write(d)
 PYEOF
@@ -274,13 +293,11 @@ patch_firmware() {
     echo -n "Continue? (y/N): "; read -r c </dev/tty
     [[ "$c" != "y" && "$c" != "Y" ]] && return
 
-    # python3 check
     if ! command -v python3 &>/dev/null; then
         echo -e "${RED}python3 not found. Run dev_install manually first.${NC}"
         read -r </dev/tty; return
     fi
 
-    # Workspace
     echo -e "${CYAN}[1/5] Preparing workspace...${NC}"
     mkdir -p "$WORKDIR"
     if ! mount | grep -q "stateful_partition.*rw"; then
@@ -289,7 +306,6 @@ patch_firmware() {
     fi
     echo -e "${GREEN}      Ready.${NC}"
 
-    # SPI WP check
     echo -e "${CYAN}[2/5] Checking SPI write protection...${NC}"
     local wp=$(flashrom -p internal --wp-status 2>/dev/null)
     if echo "$wp" | grep -qi "Protection mode: hardware"; then
@@ -302,13 +318,11 @@ patch_firmware() {
         [[ "$c" != "y" && "$c" != "Y" ]] && return
     fi
 
-    # Dump
     echo -e "${CYAN}[3/5] Reading firmware...${NC}"
     flashrom -p internal -r "$WORKDIR/fw.bin" 2>/dev/null
     [[ $? -ne 0 ]] && { echo -e "${RED}      Dump failed.${NC}"; read -r </dev/tty; return; }
     echo -e "${GREEN}      Done.${NC}"
 
-    # Extract + scan + patch
     echo -e "${CYAN}[4/5] Scanning and patching...${NC}"
     cd "$WORKDIR"
     futility dump_fmap -x fw.bin FW_MAIN_A FW_MAIN_B 2>/dev/null
@@ -321,15 +335,14 @@ patch_firmware() {
     for region in FW_MAIN_A FW_MAIN_B; do
         echo -e "${YELLOW}      Scanning ${region}...${NC}"
         scan_fw "$WORKDIR/$region"
-        patch_region "$WORKDIR/$region" "$WORKDIR/${region}.p"
-        if grep -q "hit at" <(patch_region "$WORKDIR/$region" "$WORKDIR/${region}.p" 2>&1); then
-            found_patch=1
-        fi
+        local patch_out=$(patch_region "$WORKDIR/$region" "$WORKDIR/${region}.p" 2>&1)
+        echo "$patch_out"
+        echo "$patch_out" | grep -q "patched" && found_patch=1
         cp "$WORKDIR/${region}.p" "$WORKDIR/$region"
     done
 
     if [[ $found_patch -eq 0 ]]; then
-        echo -e "${RED}      Pattern not found in any region.${NC}"
+        echo -e "${RED}      No auto-patch applied.${NC}"
         echo -e "${YELLOW}      (f) Force flash anyway  (R) Return${NC}"
         echo -n "      > "; read -r fc </dev/tty
         [[ "$fc" != "f" && "$fc" != "F" ]] && return
@@ -346,7 +359,6 @@ patch_firmware() {
     fi
     echo -e "${GREEN}      Reassembled.${NC}"
 
-    # Sign
     echo -e "${CYAN}[5/5] Signing...${NC}"
     futility sign \
         --signprivate "$DEVKEYS/firmware_data_key.vbprivk" \
@@ -366,7 +378,6 @@ patch_firmware() {
     fi
     echo -e "${GREEN}      Signed.${NC}"
 
-    # Flash
     echo
     echo -e "${RED}Point of no return.${NC}"
     echo -n "Flash? (y/N): "; read -r c </dev/tty
@@ -387,10 +398,10 @@ patch_firmware() {
 show_credits() {
     clear
     echo -e "${CYAN}================================${NC}"
-    echo -e "${CYAN}          R-Patch v6.3${NC}"
+    echo -e "${CYAN}          R-Patch v6.4${NC}"
     echo -e "${CYAN}================================${NC}"
     echo -e " ${BOLD}Code${NC}       : CriticalHD"
-    echo -e " ${BOLD}AI Assist${NC}  : Claude"
+    echo -e " ${BOLD}AI Assist${NC}  : Claude (Anthropic)"
     echo -e " ${BOLD}KVS Ref${NC}    : kxtzownsu"
     echo -e " ${BOLD}CrOS Tools${NC} : Google (tpmc, futility, flashrom)"
     echo -e " ${BOLD}Thanks${NC}     : codenerd67, Sh1mmer team"
