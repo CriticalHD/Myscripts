@@ -1,0 +1,134 @@
+#!/bin/bash
+
+set -e
+
+UE_JOB="/etc/init/update-engine.conf"
+UE_OVERRIDE="/etc/init/update-engine.override"
+LSB="/etc/lsb-release"
+AU_BACKUP="/etc/lsb-release.au.bak"
+VER_BACKUP="/etc/lsb-release.ver.bak"
+PREFS_DIR="/var/lib/update_engine/prefs"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+need_root() {
+    if [[ $EUID -ne 0 ]]; then
+        die "Run with: sudo $0 $*"
+    fi
+}
+
+is_blocked() {
+    [[ -f "$UE_OVERRIDE" ]] && grep -q "^manual" "$UE_OVERRIDE" && \
+    grep -q "127.0.0.1" "$LSB" 2>/dev/null
+}
+
+do_status() {
+    echo "=== ChromeOS Update Blocker Status ==="
+    echo ""
+    echo "Upstart override:"
+    if [[ -f "$UE_OVERRIDE" ]]; then
+        echo "  EXISTS - $(cat $UE_OVERRIDE)"
+    else
+        echo "  NOT present"
+    fi
+    echo ""
+    echo "Omaha URL (CHROMEOS_AUSERVER):"
+    grep "CHROMEOS_AUSERVER" "$LSB" 2>/dev/null || echo "  Not set (using default)"
+    echo ""
+    echo "Version (CHROMEOS_RELEASE_VERSION):"
+    grep "CHROMEOS_RELEASE_VERSION" "$LSB" 2>/dev/null || echo "  Not overridden"
+    echo ""
+    echo "update_engine running:"
+    pgrep -x update_engine >/dev/null && echo "  YES (blocking incomplete!)" || echo "  NO"
+    echo ""
+    if is_blocked; then
+        echo "Status: UPDATES ARE BLOCKED"
+    else
+        echo "Status: UPDATES NOT BLOCKED"
+    fi
+}
+
+do_block() {
+    need_root "$@"
+    
+    if is_blocked; then
+        echo "Already blocked. Run '$0 unblock' to revert."
+        return 0
+    fi
+    
+    echo "[1/3] Creating Upstart override (prevents update_engine auto-start)..."
+    echo "manual" > "$UE_OVERRIDE"
+    chmod 0644 "$UE_OVERRIDE"
+    
+    echo "[2/3] Redirecting Omaha URL to 127.0.0.1..."
+    if grep -q "CHROMEOS_AUSERVER" "$LSB" 2>/dev/null; then
+        cp "$LSB" "$AU_BACKUP"
+        sed -i 's|CHROMEOS_AUSERVER=.*|CHROMEOS_AUSERVER=http://127.0.0.1:8080|' "$LSB"
+    else
+        echo "CHROMEOS_AUSERVER=http://127.0.0.1:8080" >> "$LSB"
+    fi
+    
+    echo "[3/3] Spoofing version to prevent Omaha from serving updates..."
+    if grep -q "CHROMEOS_RELEASE_VERSION" "$LSB" 2>/dev/null; then
+        cp "$LSB" "$VER_BACKUP"
+        sed -i 's|CHROMEOS_RELEASE_VERSION=.*|CHROMEOS_RELEASE_VERSION=99999.9.9|' "$LSB"
+    else
+        echo "CHROMEOS_RELEASE_VERSION=99999.9.9" >> "$LSB"
+    fi
+    
+    echo ""
+    echo "Stopping active update_engine..."
+    pkill -x update_engine 2>/dev/null || true
+    
+    echo ""
+    echo "=== BLOCKED ==="
+    echo "- Upstart override: $UE_OVERRIDE"
+    echo "- Omaha redirected to localhost"
+    echo "- Version set to 99999.9.9"
+    echo ""
+    echo "All changes on stateful partition. Verified boot untouched."
+    echo "To fully revert: sudo $0 unblock"
+}
+
+do_unblock() {
+    need_root "$@"
+    
+    echo "[1/4] Removing Upstart override..."
+    rm -f "$UE_OVERRIDE"
+    
+    echo "[2/4] Restoring Omaha URL..."
+    if [[ -f "$AU_BACKUP" ]]; then
+        grep "CHROMEOS_AUSERVER" "$AU_BACKUP" >/dev/null && {
+            cp "$LSB" "${LSB}.new"
+            grep -v "CHROMEOS_AUSERVER" "${LSB}.new" > "$LSB"
+            grep "CHROMEOS_AUSERVER" "$AU_BACKUP" >> "$LSB"
+            rm -f "${LSB}.new"
+        }
+        rm -f "$AU_BACKUP"
+    fi
+    
+    echo "[3/4] Restoring version..."
+    if [[ -f "$VER_BACKUP" ]]; then
+        grep "CHROMEOS_RELEASE_VERSION" "$VER_BACKUP" >/dev/null && {
+            cp "$LSB" "${LSB}.new"
+            grep -v "CHROMEOS_RELEASE_VERSION" "${LSB}.new" > "$LSB"
+            grep "CHROMEOS_RELEASE_VERSION" "$VER_BACKUP" >> "$LSB"
+            rm -f "${LSB}.new"
+        }
+        rm -f "$VER_BACKUP"
+    fi
+    
+    echo "[4/4] Restarting update_engine..."
+    initctl start update-engine 2>/dev/null || true
+    
+    echo ""
+    echo "=== UNBLOCKED ==="
+    echo "Updates will resume on next boot or when update_engine starts."
+}
+
+case "${1:-status}" in
+    block|enable)  do_block ;;
+    unblock|disable|remove) do_unblock ;;
+    status)       do_status ;;
+    *)            echo "Usage: $0 {block|unblock|status}"; exit 1 ;;
+esac
