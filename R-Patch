@@ -206,71 +206,66 @@ with open(sys.argv[1], 'rb') as f:
     d = bytearray(f.read())
 n = 0
 
-# 0x4000000C (TPM_RH_PLATFORM) in Little Endian
+# TPM_RH_PLATFORM constant (0x4000000C) in Little Endian
 enable_val = bytes([0x0C, 0x00, 0x00, 0x40])
 
-for i in range(len(d) - 8):
-    # Match: MOV dword [rsp+N], 0x4000000C
-    if d[i] == 0xC7 and d[i+1] == 0x44 and d[i+2] == 0x24 and d[i+4:i+8] == enable_val:
-        off = d[i+3]
-        window = d[i+8:i+40]
+for i in range(len(d) - 12):
+    # Locate the TPM Platform Hierarchy constant
+    if d[i:i+4] == enable_val or (d[i] == 0xC7 and d[i+1] == 0x44 and d[i+2] == 0x24 and d[i+4:i+8] == enable_val):
+        
+        # We found a potential site. Look ahead ~48 bytes for the 'disable' signal (0x00).
+        # We search for the instruction that sets the 'state' argument to 0.
+        window_start = i
+        window_end = i + 64
+        window = d[window_start:window_end]
         patched = False
 
-        # Strategy 1: MOV ecx, 0 (B9 00 00 00 00) -> MOV ecx, 1 (B9 01 00 00 00)
-        for j in range(len(window) - 4):
+        # Strategy 1: MOV ecx, 0 (B9 00 00 00 00) -> Change to MOV ecx, 1
+        for j in range(len(window) - 5):
             if window[j] == 0xB9 and window[j+1] == 0x00 and window[j+2] == 0x00 and window[j+3] == 0x00 and window[j+4] == 0x00:
-                abs_j = i + 8 + j
-                d[abs_j+1] = 0x01
-                n += 1
-                print(f"  PATCHED (ecx=0->1) enable@0x{i:08x} state@0x{abs_j:08x}")
-                patched = True
-                break
+                d[window_start + j + 1] = 0x01
+                n += 1; patched = True; break
         if patched: continue
 
-        # Strategy 2: XOR zeroing -> Replace with 2-byte MOV (8-bit)
-        # xor ecx, ecx (31 C9) -> mov cl, 1 (B1 01)
-        # xor eax, eax (31 C0) -> mov al, 1 (B0 01)
-        for j in range(len(window) - 1):
-            if window[j] == 0x31 and window[j+1] == 0xC9:
-                abs_j = i + 8 + j
-                d[abs_j] = 0xB1     # mov cl
-                d[abs_j+1] = 0x01   # 1
-                n += 1
-                print(f"  PATCHED (xor ecx->mov cl,1) enable@0x{i:08x} state@0x{abs_j:08x}")
-                patched = True
-                break
-            elif window[j] == 0x31 and window[j+1] == 0xC0:
-                abs_j = i + 8 + j
-                d[abs_j] = 0xB0     # mov al
-                d[abs_j+1] = 0x01   # 1
-                n += 1
-                print(f"  PATCHED (xor eax->mov al,1) enable@0x{i:08x} state@0x{abs_j:08x}")
-                patched = True
-                break
+        # Strategy 2: XOR ecx, ecx (31 C9) or XOR eax, eax (31 C0) -> Replace with MOV reg, 1
+        # XOR is 2 bytes. MOV reg8, 1 is also 2 bytes. This preserves binary alignment.
+        for j in range(len(window) - 2):
+            if window[j] == 0x31 and window[j+1] == 0xC9: # xor ecx, ecx
+                d[window_start + j] = 0xB1     # mov cl
+                d[window_start + j + 1] = 0x01 # 1
+                n += 1; patched = True; break
+            elif window[j] == 0x31 and window[j+1] == 0xC0: # xor eax, eax
+                d[window_start + j] = 0xB0     # mov al
+                d[window_start + j + 1] = 0x01 # 1
+                n += 1; patched = True; break
         if patched: continue
 
-        # Strategy 3: Stack move - MOV byte [rsp+N+4], 00 -> 01
-        for j in range(len(window) - 4):
-            if window[j] == 0xC6 and window[j+1] == 0x44 and window[j+2] == 0x24 and window[j+3] == (off+4) & 0xFF and window[j+4] == 0x00:
-                abs_j = i + 8 + j
-                d[abs_j+4] = 0x01
-                n += 1
-                print(f"  PATCHED (byte[rsp+N+4]=0->1) enable@0x{i:08x} state@0x{abs_j:08x}")
-                break
+        # Strategy 3: MOV byte [rsp+offset], 0x00 -> Change to 0x01
+        # Common when arguments are passed on the stack
+        for j in range(len(window) - 5):
+            if window[j] == 0xC6 and window[j+1] == 0x44 and window[j+2] == 0x24 and window[j+4] == 0x00:
+                d[window_start + j + 4] = 0x01
+                n += 1; patched = True; break
+        if patched: continue
 
-# Fallback: full BE TPM packet (Hardcoded sequence)
-patA = bytes([0x40,0x00,0x00,0x0C,0x00,0x00,0x00,0x09,0x40,0x00,0x00,0x09,
-              0x00,0x00,0x01,0x00,0x00,0x40,0x00,0x00,0x0C,0x00])
-for i in range(len(d) - len(patA)):
-    if d[i:i+len(patA)] == patA:
-        d[i+len(patA)-1] = 0x01
-        n += 1
-        print(f"  PATCHED (TPM packet fallback) @0x{i:08x}")
+        # Strategy 4: MOV edx, 0 (BA 00 00 00 00) -> Change to MOV edx, 1
+        # Often used for the 3rd or 4th argument in x86_64 calling conventions
+        for j in range(len(window) - 5):
+            if window[j] == 0xBA and window[j+1] == 0x00 and window[j+2] == 0x00 and window[j+3] == 0x00 and window[j+4] == 0x00:
+                d[window_start + j + 1] = 0x01
+                n += 1; patched = True; break
 
-print(f"  Total patches applied: {n}")
-if n == 0:
-    print(f"  No patchable pattern found in {sys.argv[1]}")
-    
+# Final Fallback: Literal TPM Packet sequence
+# This matches the raw buffer for Tpm2TpmEnableNvram calls
+patA = bytes([0x40, 0x00, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x09, 0x40, 0x00, 0x00, 0x09])
+for i in range(len(d) - 32):
+    if d[i:i+12] == patA:
+        # Check if we see a trailing 0x00 in the hierarchy enable field
+        if d[i+21] == 0x00:
+            d[i+21] = 0x01
+            n += 1
+
+print(f"  Applied {n} byte-level patches.")
 with open(sys.argv[2], 'wb') as f:
     f.write(d)
 PYEOF
