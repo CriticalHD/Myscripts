@@ -66,7 +66,7 @@ is_fw_patched() { [[ -f "$PATCH_FLAG" ]]; }
 draw_header() {
     clear
     echo -e "${CYAN}================================${NC}"
-    echo -e "${CYAN}  ${BOLD}R-Patch v6.8${NC}  ${CYAN}·  CriticalHD${NC}"
+    echo -e "${CYAN}  ${BOLD}R-Patch v6.9${NC}  ${CYAN}·  CriticalHD${NC}"
     echo -e "${CYAN}================================${NC}"
     if is_fw_patched; then
         echo -e " Firmware  : ${GREEN}PATCHED${NC}"
@@ -159,6 +159,13 @@ change_rollback() {
     read -r </dev/tty
 }
 
+# Key insight: tlcl_disable_platform_hierarchy is a SMALL function.
+# It passes args in REGISTERS not stack (x86-64 calling convention):
+#   edi = hc.enable = 0x4000000C  -> BF 0C 00 00 40
+#   esi = hc.state  = 0           -> preceded by XOR esi,esi or MOV esi,0
+# The stack stores we found are from marshal_hierarchy_control which is a
+# DIFFERENT function that handles all hierarchy types.
+# We need: BF 0C 00 00 40 (MOV edi,0x4000000C) with state=0 nearby.
 scan_fw() {
     local file="$1"
     python3 - "$file" <<'PYEOF'
@@ -166,34 +173,41 @@ import sys
 with open(sys.argv[1],'rb') as f: d=f.read()
 print(f"  File: {sys.argv[1]} ({len(d)} bytes)")
 
-# Find all MOV [rsp+N], 0x4000000C (enable field stores)
-# and show full 64-byte context so we can see state patterns
-enable_pat=bytes([0x0C,0x00,0x00,0x40])  # LE value after C7 44 24 N
+# Search for all register-load patterns of 0x4000000C
+# These are what a small leaf function would use (args in regs)
+patterns = [
+    (bytes([0xBF,0x0C,0x00,0x00,0x40]), "MOV edi,0x4000000C"),
+    (bytes([0xBE,0x0C,0x00,0x00,0x40]), "MOV esi,0x4000000C"),
+    (bytes([0xB8,0x0C,0x00,0x00,0x40]), "MOV eax,0x4000000C"),
+    (bytes([0xB9,0x0C,0x00,0x00,0x40]), "MOV ecx,0x4000000C"),
+    (bytes([0xBA,0x0C,0x00,0x00,0x40]), "MOV edx,0x4000000C"),
+    # REX variants for 64-bit
+    (bytes([0x41,0xBF,0x0C,0x00,0x00,0x40]), "MOV r15d,0x4000000C"),
+    (bytes([0x41,0xBE,0x0C,0x00,0x00,0x40]), "MOV r14d,0x4000000C"),
+]
 
-hits=[]
-for i in range(len(d)-8):
-    if d[i]==0xC7 and d[i+1]==0x44 and d[i+2]==0x24 and d[i+4:i+8]==enable_pat:
-        hits.append((i, d[i+3]))
-
-print(f"  MOV [rsp+N], 0x4000000C: {len(hits)} hits")
-for addr, off in hits:
-    # Show 16 bytes before and 32 bytes after
-    ctx = d[max(0,addr-16):addr+40]
-    print(f"  0x{addr:08x} [rsp+0x{off:02x}]: {ctx.hex(' ')}")
-    # Look for state patterns within 32 bytes after enable store
-    window = d[addr+8:addr+40]
-    # b9 XX 00 00 00 = mov ecx, state_val
-    for j in range(len(window)-4):
-        if window[j]==0xB9 and window[j+2]==0x00 and window[j+3]==0x00 and window[j+4]==0x00:
-            print(f"    -> MOV ecx,{window[j+1]} at +{j+8}: state={window[j+1]} ({'DISABLE' if window[j+1]==0 else 'ENABLE'})")
-    # 31 XX = xor reg,reg (zeroing)
-    for j in range(len(window)-1):
-        if window[j]==0x31:
-            print(f"    -> XOR at +{j+8}: {window[j:j+2].hex(' ')} (zeroing reg)")
-    # C6 44 24 XX 00 = mov byte [rsp+XX], 0
-    for j in range(len(window)-4):
-        if window[j]==0xC6 and window[j+1]==0x44 and window[j+2]==0x24:
-            print(f"    -> MOV byte [rsp+0x{window[j+3]:02x}],{window[j+4]} at +{j+8}: state={window[j+4]}")
+for pat, label in patterns:
+    hits = [i for i in range(len(d)-len(pat)) if d[i:i+len(pat)]==pat]
+    if hits:
+        print(f"  {label}: {len(hits)} hit(s)")
+        for i in hits:
+            ctx = d[max(0,i-16):i+32]
+            print(f"    0x{i:08x}: {ctx.hex(' ')}")
+            # Show what's nearby — look for zero-state indicators
+            pre  = d[max(0,i-16):i]
+            post = d[i+len(pat):i+len(pat)+16]
+            # XOR reg,reg patterns
+            xors = {0xC0:'eax',0xC9:'ecx',0xD2:'edx',0xF6:'esi',0xFF:'edi',0xDB:'ebx'}
+            for j in range(len(pre)-1):
+                if pre[j]==0x31 and pre[j+1] in xors:
+                    print(f"      PRE: XOR {xors[pre[j+1]]},{xors[pre[j+1]]} at -{len(pre)-j} (state=0 indicator)")
+            for j in range(len(post)-1):
+                if post[j]==0x31 and post[j+1] in xors:
+                    print(f"      POST: XOR {xors[post[j+1]]},{xors[post[j+1]]} at +{len(pat)+j} (state=0 indicator)")
+            # MOV reg,0
+            for j in range(len(post)-4):
+                if post[j] in (0xBF,0xBE,0xB8,0xB9,0xBA) and post[j+1]==0x00 and post[j+2]==0x00 and post[j+3]==0x00 and post[j+4]==0x00:
+                    print(f"      POST: MOV reg,0 at +{len(pat)+j} (state=0)")
 PYEOF
 }
 
@@ -201,65 +215,81 @@ patch_region() {
     local file="$1" out="$2"
     python3 - "$file" "$out" <<'PYEOF'
 import sys
+with open(sys.argv[1],'rb') as f: d=bytearray(f.read())
+n=0
 
-with open(sys.argv[1], 'rb') as f:
-    d = bytearray(f.read())
-n = 0
+# Patterns: MOV reg, 0x4000000C (register-based calling convention)
+reg_patterns = [
+    bytes([0xBF,0x0C,0x00,0x00,0x40]),  # MOV edi
+    bytes([0xBE,0x0C,0x00,0x00,0x40]),  # MOV esi
+    bytes([0xB8,0x0C,0x00,0x00,0x40]),  # MOV eax
+    bytes([0xB9,0x0C,0x00,0x00,0x40]),  # MOV ecx
+    bytes([0xBA,0x0C,0x00,0x00,0x40]),  # MOV edx
+]
 
-# TPM_RH_PLATFORM constant (0x4000000C) in Little Endian
-enable_val = bytes([0x0C, 0x00, 0x00, 0x40])
+xors = {0xC0:'eax',0xC9:'ecx',0xD2:'edx',0xF6:'esi',0xFF:'edi',0xDB:'ebx'}
+# Map XOR second byte to MOV reg8,1 replacement
+xor_to_mov1 = {
+    0xC0: bytes([0xB0,0x01]),  # MOV al,1
+    0xC9: bytes([0xB1,0x01]),  # MOV cl,1
+    0xD2: bytes([0xB2,0x01]),  # MOV dl,1
+    0xF6: bytes([0xB6,0x01]),  # MOV sil,1 (needs REX but same size)
+    0xFF: bytes([0xB7,0x01]),  # MOV dil,1
+    0xDB: bytes([0xB3,0x01]),  # MOV bl,1
+}
 
-i = 0
-while i < len(d) - 12:
-    # 1. Locate the TPM Platform Hierarchy constant (0x4000000C)
-    if d[i:i+4] == enable_val:
-        # Define a window to look for the 'Disable' (0) signal
-        # We look 16 bytes back and 48 bytes forward
-        w_start = max(0, i - 16)
-        w_end = min(len(d), i + 64)
-        window = d[w_start:w_end]
-        patched = False
+for pat in reg_patterns:
+    for i in range(len(d)-len(pat)):
+        if d[i:i+len(pat)]==pat:
+            pre  = d[max(0,i-16):i]
+            post = d[i+len(pat):i+len(pat)+16]
 
-        # Strategy: Search for any "Move 0 to Register" or "Move 0 to Stack"
-        # and flip that 0 to a 1.
-        for j in range(len(window) - 5):
-            abs_pos = w_start + j
-            
-            # Target: MOV ESI, 0 (BE 00 00 00 00) -> common in x64
-            if window[j] == 0xBE and window[j+1:j+5] == b'\x00\x00\x00\x00':
-                d[abs_pos + 1] = 0x01
-                n += 1; patched = True; break
-                
-            # Target: MOV EDI, 0 (BF 00 00 00 00)
-            if window[j] == 0xBF and window[j+1:j+5] == b'\x00\x00\x00\x00':
-                d[abs_pos + 1] = 0x01
-                n += 1; patched = True; break
+            # Look for XOR reg,reg in pre (state=0 zeroing before enable load)
+            patched=False
+            for j in range(len(pre)-1):
+                if pre[j]==0x31 and pre[j+1] in xor_to_mov1:
+                    abs_j=max(0,i-16)+j
+                    replacement=xor_to_mov1[pre[j+1]]
+                    d[abs_j]=replacement[0]
+                    d[abs_j+1]=replacement[1]
+                    n+=1; patched=True
+                    print(f"  PATCHED(XOR->MOV8 1) @0x{abs_j:08x} near enable@0x{i:08x}")
+                    break
 
-            # Target: XOR reg, reg (31 C0 through 31 FF)
-            # We convert these to "MOV reg8, 1" to keep size identical
-            if window[j] == 0x31 and (0xC0 <= window[j+1] <= 0xFF):
-                reg_map = {0xC0: 0xB0, 0xC9: 0xB1, 0xD2: 0xB2, 0xDB: 0xB3}
-                if window[j+1] in reg_map:
-                    d[abs_pos] = reg_map[window[j+1]] # Change XOR to MOV
-                    d[abs_pos + 1] = 0x01             # Change 0 to 1
-                    n += 1; patched = True; break
+            if not patched:
+                # Look for MOV reg,0 in post (state=0 after enable load)
+                for j in range(len(post)-4):
+                    if post[j] in (0xBF,0xBE,0xB8,0xB9,0xBA) and post[j+1]==0x00 and post[j+2:j+5]==b'\x00\x00\x00':
+                        abs_j=i+len(pat)+j
+                        d[abs_j+1]=0x01
+                        n+=1; patched=True
+                        print(f"  PATCHED(MOV reg,0->1) @0x{abs_j:08x} near enable@0x{i:08x}")
+                        break
 
-        if patched:
-            i = w_end # Skip ahead to avoid double-patching the same site
-            continue
-    i += 1
+            if not patched:
+                # Look for XOR reg,reg in post
+                for j in range(len(post)-1):
+                    if post[j]==0x31 and post[j+1] in xor_to_mov1:
+                        abs_j=i+len(pat)+j
+                        replacement=xor_to_mov1[post[j+1]]
+                        d[abs_j]=replacement[0]
+                        d[abs_j+1]=replacement[1]
+                        n+=1; patched=True
+                        print(f"  PATCHED(XOR->MOV8 1 post) @0x{abs_j:08x} near enable@0x{i:08x}")
+                        break
 
-# Fallback: Literal TPM Packet (Check for the 22nd byte being 0x00)
-patA = bytes([0x40, 0x00, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x09, 0x40, 0x00, 0x00, 0x09])
-for i in range(len(d) - 32):
-    if d[i:i+12] == patA:
-        if d[i+21] == 0x00:
-            d[i+21] = 0x01
-            n += 1
+# Fallback: full BE TPM packet
+patA=bytes([0x40,0x00,0x00,0x0C,0x00,0x00,0x00,0x09,0x40,0x00,0x00,0x09,
+            0x00,0x00,0x01,0x00,0x00,0x40,0x00,0x00,0x0C,0x00])
+for i in range(len(d)-len(patA)):
+    if d[i:i+len(patA)]==patA:
+        d[i+len(patA)-1]=0x01; n+=1
+        print(f"  PATCHED(TPM packet) @0x{i:08x}")
 
-print(f"  Applied {n} byte-level patches.")
-with open(sys.argv[2], 'wb') as f:
-    f.write(d)
+print(f"  Total patches: {n}")
+if n==0:
+    print(f"  No patchable pattern found in {sys.argv[1]}")
+with open(sys.argv[2],'wb') as f: f.write(d)
 PYEOF
 }
 
@@ -375,9 +405,10 @@ patch_firmware() {
 show_credits() {
     clear
     echo -e "${CYAN}================================${NC}"
-    echo -e "${CYAN}          R-Patch v6.8${NC}"
+    echo -e "${CYAN}          R-Patch v6.9${NC}"
     echo -e "${CYAN}================================${NC}"
     echo -e " ${BOLD}Code${NC}       : CriticalHD"
+    echo -e " ${BOLD}AI Assist${NC}  : Claude (Anthropic)"
     echo -e " ${BOLD}KVS Ref${NC}    : kxtzownsu"
     echo -e " ${BOLD}CrOS Tools${NC} : Google (tpmc, futility, flashrom)"
     echo -e " ${BOLD}Thanks${NC}     : codenerd67, Sh1mmer team"
