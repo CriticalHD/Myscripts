@@ -388,7 +388,7 @@ patch_firmware() {
 show_credits() {
     clear
     echo -e "${CYAN}================================${NC}"
-    echo -e "${CYAN}          R-Patch v6.6${NC}"
+    echo -e "${CYAN}          R-Patch v6.7${NC}"
     echo -e "${CYAN}================================${NC}"
     echo -e " ${BOLD}Code${NC}       : CriticalHD"
     echo -e " ${BOLD}KVS Ref${NC}    : kxtzownsu"
