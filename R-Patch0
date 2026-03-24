@@ -1,0 +1,335 @@
+
+#!/bin/bash
+
+INDEX="0x1008"
+WORKDIR="/mnt/stateful_partition/rpatch_work"
+PATCH_FLAG="$WORKDIR/.fw_patched"
+DEVKEYS="/usr/share/vboot/devkeys"
+
+RED="\033[0;31m"
+GREEN="\033[0;32m"
+YELLOW="\033[1;33m"
+CYAN="\033[0;36m"
+BOLD="\033[1m"
+NC="\033[0m"
+
+stop_tpm_daemon() {
+    [[ "$TPM_VER" == "1.2" ]] && sudo initctl stop tcsd 2>/dev/null \
+                               || sudo initctl stop trunksd 2>/dev/null
+}
+
+start_tpm_daemon() {
+    [[ "$TPM_VER" == "1.2" ]] && sudo initctl start tcsd 2>/dev/null \
+                               || sudo initctl start trunksd 2>/dev/null
+}
+
+get_info() {
+    TPM_VER=$(tpmc tpmver 2>/dev/null | tr -d '\n')
+    [[ -z "$TPM_VER" ]] && TPM_VER="?"
+    if [[ "$TPM_VER" == "1.2" ]]; then
+        GSC_TYPE="preCr50"
+    else
+        GSC_TYPE=$(gsctool -a -I 2>/dev/null | grep -qi AllowUnverifiedRo && echo "ti50" || echo "cr50")
+    fi
+    stop_tpm_daemon
+    local raw=$(tpmc read $INDEX 9 2>/dev/null)
+    local fb=$(echo "$raw" | awk '{print $1}')
+    case "$fb" in
+        "02") STRUCT_VER="V0" ;;
+        "10") STRUCT_VER="V1" ;;
+        *)    STRUCT_VER="?"  ;;
+    esac
+    local b=($raw)
+    if [[ "$STRUCT_VER" == "V0" ]]; then
+        local lo=$((16#${b[5]:-0})) hi=$((16#${b[7]:-0}))
+        local val=$(( lo | (hi << 16) ))
+        KV_NUM=$( [[ $val -eq 0 ]] && echo "0" || echo $(( val & 0xFFFF )) )
+    elif [[ "$STRUCT_VER" == "V1" ]]; then
+        local lo=$((16#${b[4]:-0})) hi=$((16#${b[6]:-0}))
+        local val=$(( lo | (hi << 16) ))
+        KV_NUM=$( [[ $val -eq 0 ]] && echo "0" || echo $(( val & 0xFFFF )) )
+    else
+        KV_NUM="?"
+    fi
+    local vf=$(tpmc getvf 2>/dev/null)
+    if echo "$vf" | grep -q "phEnable 1"; then
+        PH_STATUS="${GREEN}Enabled${NC}"
+    elif echo "$vf" | grep -q "phEnable 0"; then
+        PH_STATUS="${RED}Disabled${NC}"
+    else
+        PH_STATUS="${YELLOW}Unknown${NC}"
+    fi
+    start_tpm_daemon
+}
+
+is_fw_patched() { [[ -f "$PATCH_FLAG" ]]; }
+
+draw_header() {
+    clear
+    echo -e "${CYAN}================================${NC}"
+    echo -e "${CYAN}  ${BOLD}R-Patch v6.8${NC}  ${CYAN}·  CriticalHD${NC}"
+    echo -e "${CYAN}================================${NC}"
+    if is_fw_patched; then
+        echo -e " Firmware  : ${GREEN}PATCHED${NC}"
+    else
+        echo -e " Firmware  : ${RED}NOT PATCHED${NC}"
+    fi
+    echo -e " TPM       : ${CYAN}${TPM_VER}${NC}"
+    echo -e " GSC       : ${CYAN}${GSC_TYPE}${NC}"
+    echo -e " Kernver   : ${YELLOW}KV${KV_NUM}${NC}"
+    echo -e " Struct    : ${CYAN}${STRUCT_VER}${NC}"
+    echo -e " Plat.Hier : $(echo -e $PH_STATUS)"
+    echo -e "${CYAN}================================${NC}"
+    echo
+}
+
+to_le32() {
+    local v=$1
+    printf "%02x %02x %02x %02x" \
+        $((v & 0xFF)) $(((v>>8) & 0xFF)) $(((v>>16) & 0xFF)) $(((v>>24) & 0xFF))
+}
+
+crc8() {
+    local data=("$@") crc=0
+    for byte in "${data[@]}"; do
+        local b=$((16#$byte))
+        for ((i=0;i<8;i++)); do
+            local mix=$(( (crc ^ b) & 1 ))
+            crc=$(( crc >> 1 ))
+            (( mix )) && crc=$(( crc ^ 0x8C ))
+            b=$(( b >> 1 ))
+        done
+    done
+    printf "%02x" $crc
+}
+
+build_struct() {
+    local ver=$1 kv=$2
+    if [[ "$ver" == "V0" ]]; then
+        local kv_b=($(to_le32 "$kv"))
+        local full=("02" "4c" "57" "52" "47" "${kv_b[@]}" "00" "00" "00" "00")
+        full[11]=$(crc8 "${full[@]:0:11}")
+    elif [[ "$ver" == "V1" ]]; then
+        local kv_b=($(to_le32 "$kv"))
+        local ec=()
+        for ((i=0;i<32;i++)); do ec+=("00"); done
+        local full=("10" "28" "00" "00" "${kv_b[@]}" "${ec[@]}")
+        full[2]=$(crc8 "${full[@]:3}")
+    else
+        echo -e "${RED}Unknown struct version${NC}"; return 1
+    fi
+    echo "${full[@]}"
+}
+
+change_rollback() {
+    if ! is_fw_patched; then
+        echo -e "${RED}Patch firmware first (option 2).${NC}"
+        read -r </dev/tty; return
+    fi
+    echo -e "${CYAN}Current: KV${KV_NUM} (${STRUCT_VER})${NC}"
+    echo
+    echo -e " ${YELLOW}0${NC}) KV0 — boots all versions"
+    echo -e " ${YELLOW}1${NC}) KV1 — boots all versions"
+    echo -e " ${YELLOW}2${NC}) KV2 — boots R112+"
+    echo -e " ${YELLOW}3${NC}) KV3 — boots R120+"
+    echo -e " ${YELLOW}4${NC}) KV4 — boots R125+"
+    echo -e " ${YELLOW}5${NC}) KV5 — boots R133+"
+    echo -e " ${YELLOW}6${NC}) KV6 — boots R138+"
+    echo -e " ${YELLOW}7${NC}) KV7 — boots R144+"
+    echo -e " ${YELLOW}B${NC}) Back"
+    echo -n "> "; read -r kv </dev/tty
+    [[ "$kv" =~ ^[Bb]$ ]] && return
+    [[ ! "$kv" =~ ^[0-7]$ ]] && { echo -e "${RED}Invalid.${NC}"; sleep 1; return; }
+    local kv_val
+    [[ "$kv" == "0" ]] && kv_val=0 || kv_val=$(( 0x00010000 + kv ))
+    local bytes=($(build_struct "$STRUCT_VER" "$kv_val"))
+    [[ $? -ne 0 ]] && return
+    echo -e "${YELLOW}Set kernver to KV${kv}? (y/N):${NC} "; read -r c </dev/tty
+    [[ "$c" != "y" && "$c" != "Y" ]] && return
+    stop_tpm_daemon
+    tpmc write $INDEX "${bytes[@]}"
+    local rc=$?
+    start_tpm_daemon
+    if [[ $rc -eq 0 ]]; then
+        echo -e "${GREEN}Done. KV set to ${kv}.${NC}"
+        get_info
+    else
+        echo -e "${RED}Write failed (code $rc).${NC}"
+        echo -e "${YELLOW}Check platform hierarchy status in header.${NC}"
+    fi
+    read -r </dev/tty
+}
+
+scan_fw() {
+    local file="$1"
+    python3 - "$file" <<'PYEOF'
+import sys
+with open(sys.argv[1],'rb') as f: d=f.read()
+print(f"  File: {sys.argv[1]} ({len(d)} bytes)")
+
+# Find all MOV [rsp+N], 0x4000000C (enable field stores)
+# and show full 64-byte context so we can see state patterns
+enable_pat=bytes([0x0C,0x00,0x00,0x40])  # LE value after C7 44 24 N
+
+hits=[]
+for i in range(len(d)-8):
+    if d[i]==0xC7 and d[i+1]==0x44 and d[i+2]==0x24 and d[i+4:i+8]==enable_pat:
+        hits.append((i, d[i+3]))
+
+print(f"  MOV [rsp+N], 0x4000000C: {len(hits)} hits")
+for addr, off in hits:
+    # Show 16 bytes before and 32 bytes after
+    ctx = d[max(0,addr-16):addr+40]
+    print(f"  0x{addr:08x} [rsp+0x{off:02x}]: {ctx.hex(' ')}")
+    # Look for state patterns within 32 bytes after enable store
+    window = d[addr+8:addr+40]
+    # b9 XX 00 00 00 = mov ecx, state_val
+    for j in range(len(window)-4):
+        if window[j]==0xB9 and window[j+2]==0x00 and window[j+3]==0x00 and window[j+4]==0x00:
+            print(f"    -> MOV ecx,{window[j+1]} at +{j+8}: state={window[j+1]} ({'DISABLE' if window[j+1]==0 else 'ENABLE'})")
+    # 31 XX = xor reg,reg (zeroing)
+    for j in range(len(window)-1):
+        if window[j]==0x31:
+            print(f"    -> XOR at +{j+8}: {window[j:j+2].hex(' ')} (zeroing reg)")
+    # C6 44 24 XX 00 = mov byte [rsp+XX], 0
+    for j in range(len(window)-4):
+        if window[j]==0xC6 and window[j+1]==0x44 and window[j+2]==0x24:
+            print(f"    -> MOV byte [rsp+0x{window[j+3]:02x}],{window[j+4]} at +{j+8}: state={window[j+4]}")
+PYEOF
+}
+
+patch_region() {
+    local file="$1" out="$2"
+    # This Python block is the "brain" that finds the bytes
+    python3 - "$file" "$out" <<'PYEOF'
+import sys, re
+
+def patch_data(d):
+    n = 0
+    # TPM_RH_PLATFORM (0x4000000C) in Little Endian
+    TARGET_CONST = b'\x0C\x00\x00\x40'
+    
+    # We search for the constant first
+    for match in re.finditer(re.escape(TARGET_CONST), d):
+        idx = match.start()
+        # Look in a 64-byte window around the constant for the 'Disable' signal
+        w_start = max(0, idx - 32)
+        w_end = min(len(d), idx + 64)
+        window = d[w_start:w_end]
+        
+        patched = False
+        # Strategy: Look for ANY "Move 0" or "XOR" instruction
+        # 1. XORs (2 bytes): 31 C0 (eax), 31 C9 (ecx), 31 D2 (edx), 31 F6 (esi), 31 FF (edi)
+        for j in range(len(window)-1):
+            if window[j] == 0x31 and window[j+1] in [0xC0, 0xC9, 0xD2, 0xF6, 0xFF]:
+                # Transform XOR reg,reg (zero) -> MOV reg8, 1 (one)
+                # This keeps the binary size exactly the same.
+                reg_map = {0xC0:0xB0, 0xC9:0xB1, 0xD2:0xB2, 0xF6:0xB6, 0xFF:0xBF}
+                d[w_start + j] = reg_map[window[j+1]]
+                d[w_start + j + 1] = 0x01
+                n += 1; patched = True; break
+        
+        if patched: continue
+
+        # 2. MOVs (5 bytes): B8/B9/BA/BE/BF followed by 00 00 00 00
+        for j in range(len(window)-5):
+            if window[j] in [0xB8, 0xB9, 0xBA, 0xBE, 0xBF] and window[j+1:j+5] == b'\x00\x00\x00\x00':
+                d[w_start + j + 1] = 0x01 # Change the first byte of the 0 to 1
+                n += 1; patched = True; break
+                
+    return d, n
+
+with open(sys.argv[1], 'rb') as f:
+    data = bytearray(f.read())
+new_data, count = patch_data(data)
+print(f"  Applied {count} patches.")
+with open(sys.argv[2], 'wb') as f:
+    f.write(new_data)
+PYEOF
+}
+
+patch_firmware() {
+    draw_header
+    echo -e "${YELLOW}      [1/4] Reading firmware...${NC}"
+    # Use -p internal:bus=spi for newer devices if standard internal fails
+    flashrom -p internal -r "$WORKDIR/fw.bin" >/dev/null 2>&1
+    
+    echo -e "${YELLOW}      [2/4] Extracting regions...${NC}"
+    # We target FW_MAIN_A and B specifically as that's where the logic lives
+    futility dump_fmap -x "$WORKDIR/fw.bin" \
+        FW_MAIN_A:"$WORKDIR/main_a.bin" \
+        FW_MAIN_B:"$WORKDIR/main_b.bin" >/dev/null 2>&1
+
+    echo -e "${YELLOW}      [3/4] Patching bytes...${NC}"
+    local total_p=0
+    for reg in "main_a.bin" "main_b.bin"; do
+        if [[ -f "$WORKDIR/$reg" ]]; then
+            echo -e "      Checking $reg..."
+            local res=$(patch_region "$WORKDIR/$reg" "$WORKDIR/${reg}_p")
+            echo "$res"
+            if [[ "$res" == *"Applied [1-9]"* ]]; then
+                ((total_p++))
+                # Inject patched region back into the full image
+                futility load_fmap "$WORKDIR/fw.bin" "${reg^^%_p}:$WORKDIR/${reg}_p"
+            fi
+        fi
+    done
+
+    if [[ $total_p -eq 0 ]]; then
+        echo -e "${RED}      Error: No patchable patterns found.${NC}"
+        echo "      Your firmware may be LZMA compressed."
+        read -r </dev/tty; return
+    fi
+
+    echo -e "${RED}${BOLD}      !!! BRICK RISK !!!${NC}"
+    echo -e "      Hardware WP must be DISABLED."
+    echo -ne "      Proceed with flash? (y/N): "; read -r c
+    [[ "$c" != "y" && "$c" != "Y" ]] && { echo "Aborted."; read -r </dev/tty; return; }
+
+    echo -e "${YELLOW}      [4/4] Writing firmware...${NC}"
+    flashrom -p internal -w "$WORKDIR/fw.bin"
+    if [[ $? -eq 0 ]]; then
+        touch "$PATCH_FLAG"
+        echo -e "${GREEN}      Done! Reboot and use 'tpmc' in VT2.${NC}"
+    else
+        echo -e "${RED}      Flash failed! Do not reboot!${NC}"
+    fi
+    read -r </dev/tty
+}
+
+show_credits() {
+    clear
+    echo -e "${CYAN}================================${NC}"
+    echo -e "${CYAN}          R-Patch v6.8${NC}"
+    echo -e "${CYAN}================================${NC}"
+    echo -e " ${BOLD}Code${NC}       : CriticalHD"
+    echo -e " ${BOLD}KVS Ref${NC}    : kxtzownsu"
+    echo -e " ${BOLD}CrOS Tools${NC} : Google (tpmc, futility, flashrom)"
+    echo -e " ${BOLD}Thanks${NC}     : codenerd67, Sh1mmer team"
+    echo -e "${CYAN}================================${NC}"
+    echo
+    echo "Press Enter to return..."
+    read -r </dev/tty
+}
+
+get_info
+
+while true; do
+    draw_header
+    if is_fw_patched; then
+        echo -e " ${YELLOW}1)${NC} Change Rollback"
+    else
+        echo -e " ${RED}1) Change Rollback [patch firmware first]${NC}"
+    fi
+    echo -e " ${YELLOW}2)${NC} Patch Firmware"
+    echo -e " ${YELLOW}3)${NC} Credits"
+    echo -e " ${YELLOW}E)${NC} Exit"
+    echo -n "> "; read -r choice </dev/tty
+    case "$choice" in
+        1) change_rollback ;;
+        2) patch_firmware ;;
+        3) show_credits ;;
+        [Ee]) exit 0 ;;
+        *) echo -e "${RED}Invalid.${NC}"; sleep 1 ;;
+    esac
+done
