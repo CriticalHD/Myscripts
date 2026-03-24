@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# ─── Constants ───────────────────────────────────────────────────────────────
 INDEX="0x1008"
 WORKDIR="/mnt/stateful_partition/rpatch_work"
 PATCH_FLAG="$WORKDIR/.fw_patched"
@@ -13,7 +12,6 @@ CYAN="\033[0;36m"
 BOLD="\033[1m"
 NC="\033[0m"
 
-# ─── TPM Daemon ──────────────────────────────────────────────────────────────
 stop_tpm_daemon() {
     [[ "$TPM_VER" == "1.2" ]] && sudo initctl stop tcsd 2>/dev/null \
                                || sudo initctl stop trunksd 2>/dev/null
@@ -24,7 +22,6 @@ start_tpm_daemon() {
                                || sudo initctl start trunksd 2>/dev/null
 }
 
-# ─── System Info ─────────────────────────────────────────────────────────────
 get_info() {
     TPM_VER=$(tpmc tpmver 2>/dev/null | tr -d '\n')
     [[ -z "$TPM_VER" ]] && TPM_VER="?"
@@ -66,11 +63,10 @@ get_info() {
 
 is_fw_patched() { [[ -f "$PATCH_FLAG" ]]; }
 
-# ─── Header ──────────────────────────────────────────────────────────────────
 draw_header() {
     clear
     echo -e "${CYAN}================================${NC}"
-    echo -e "${CYAN}  ${BOLD}R-Patch v6.5${NC}  ${CYAN}·  CriticalHD${NC}"
+    echo -e "${CYAN}  ${BOLD}R-Patch v6.6${NC}  ${CYAN}·  CriticalHD${NC}"
     echo -e "${CYAN}================================${NC}"
     if is_fw_patched; then
         echo -e " Firmware  : ${GREEN}PATCHED${NC}"
@@ -86,7 +82,6 @@ draw_header() {
     echo
 }
 
-# ─── CRC / Struct ────────────────────────────────────────────────────────────
 to_le32() {
     local v=$1
     printf "%02x %02x %02x %02x" \
@@ -125,7 +120,6 @@ build_struct() {
     echo "${full[@]}"
 }
 
-# ─── Kernver Switcher ────────────────────────────────────────────────────────
 change_rollback() {
     if ! is_fw_patched; then
         echo -e "${RED}Patch firmware first (option 2).${NC}"
@@ -165,57 +159,44 @@ change_rollback() {
     read -r </dev/tty
 }
 
-# ─── Firmware Scanner ────────────────────────────────────────────────────────
-# Key insight from vboot source (tlcl.c):
-#   hc.enable = TPM_RH_PLATFORM (0x4000000C)
-#   hc.state  = 0               (disable)
-# On x86-64, enable is stored at [rsp+N] as LE: C7 44 24 N 0C 00 00 40
-# State (1 byte, value 0x00) is stored at [rsp+N+4]: C6 44 24 N+4 00
-# We find the enable store, then look for state=0 store nearby and patch it to 0x01
 scan_fw() {
     local file="$1"
     python3 - "$file" <<'PYEOF'
 import sys
 with open(sys.argv[1],'rb') as f: d=f.read()
-
 print(f"  File: {sys.argv[1]} ({len(d)} bytes)")
 
-# x86-64 LE patterns
-le_plat=bytes([0x0C,0x00,0x00,0x40])  # TPM_RH_PLATFORM LE
-le_cc  =bytes([0x21,0x01,0x00,0x00])  # TPM_CC_HIER_CTRL LE
+# Find all MOV [rsp+N], 0x4000000C (enable field stores)
+# and show full 64-byte context so we can see state patterns
+enable_pat=bytes([0x0C,0x00,0x00,0x40])  # LE value after C7 44 24 N
 
-# Find MOV [rsp+N], 0x4000000C  (C7 44 24 N 0C 00 00 40)
-# and MOV [rbp-N], 0x4000000C   (C7 45 N 0C 00 00 40  or  C7 85 N N N N 0C 00 00 40)
-rsp_hits=[]
+hits=[]
 for i in range(len(d)-8):
-    # C7 44 24 <offset8> 0C 00 00 40
-    if d[i]==0xC7 and d[i+1]==0x44 and d[i+2]==0x24 and d[i+4:i+8]==bytes([0x0C,0x00,0x00,0x40]):
-        rsp_hits.append(('rsp+0x{:02x}'.format(d[i+3]), i, d[i+3]))
-    # C7 45 <offset8> 0C 00 00 40
-    if d[i]==0xC7 and d[i+1]==0x45 and d[i+3:i+7]==bytes([0x0C,0x00,0x00,0x40]):
-        rsp_hits.append(('rbp-0x{:02x}'.format(256-d[i+2] if d[i+2]>127 else d[i+2]), i, None))
+    if d[i]==0xC7 and d[i+1]==0x44 and d[i+2]==0x24 and d[i+4:i+8]==enable_pat:
+        hits.append((i, d[i+3]))
 
-print(f"  MOV [rsp/rbp], 0x4000000C hits: {len(rsp_hits)}")
-for label, i, off in rsp_hits:
-    ctx = d[max(0,i-8):i+48]
-    print(f"    0x{i:08x} ({label}): {ctx.hex(' ')}")
-    # For rsp hits, look for state byte (C6 44 24 <off+4> 00) within next 32 bytes
-    if off is not None:
-        state_off = (off + 4) & 0xFF
-        for j in range(i+8, min(i+48, len(d)-5)):
-            # C6 44 24 <state_off> <state_val>
-            if d[j]==0xC6 and d[j+1]==0x44 and d[j+2]==0x24 and d[j+3]==state_off:
-                print(f"      -> STATE BYTE at 0x{j+4:08x}: value=0x{d[j+4]:02x} ({'DISABLE' if d[j+4]==0 else 'ENABLE'})")
-
-# Also show CC hits with full context
-cc_hits=[i for i in range(len(d)-4) if d[i:i+4]==le_cc]
-print(f"  TPM_CC_HIER_CTRL LE hits: {len(cc_hits)}")
-for i in cc_hits[:5]:
-    print(f"    0x{i:08x}: {d[max(0,i-8):i+32].hex(' ')}")
+print(f"  MOV [rsp+N], 0x4000000C: {len(hits)} hits")
+for addr, off in hits:
+    # Show 16 bytes before and 32 bytes after
+    ctx = d[max(0,addr-16):addr+40]
+    print(f"  0x{addr:08x} [rsp+0x{off:02x}]: {ctx.hex(' ')}")
+    # Look for state patterns within 32 bytes after enable store
+    window = d[addr+8:addr+40]
+    # b9 XX 00 00 00 = mov ecx, state_val
+    for j in range(len(window)-4):
+        if window[j]==0xB9 and window[j+2]==0x00 and window[j+3]==0x00 and window[j+4]==0x00:
+            print(f"    -> MOV ecx,{window[j+1]} at +{j+8}: state={window[j+1]} ({'DISABLE' if window[j+1]==0 else 'ENABLE'})")
+    # 31 XX = xor reg,reg (zeroing)
+    for j in range(len(window)-1):
+        if window[j]==0x31:
+            print(f"    -> XOR at +{j+8}: {window[j:j+2].hex(' ')} (zeroing reg)")
+    # C6 44 24 XX 00 = mov byte [rsp+XX], 0
+    for j in range(len(window)-4):
+        if window[j]==0xC6 and window[j+1]==0x44 and window[j+2]==0x24:
+            print(f"    -> MOV byte [rsp+0x{window[j+3]:02x}],{window[j+4]} at +{j+8}: state={window[j+4]}")
 PYEOF
 }
 
-# ─── Firmware Patcher ────────────────────────────────────────────────────────
 patch_region() {
     local file="$1" out="$2"
     python3 - "$file" "$out" <<'PYEOF'
@@ -223,35 +204,47 @@ import sys
 with open(sys.argv[1],'rb') as f: d=bytearray(f.read())
 n=0
 
-# Strategy: find MOV [rsp+N], 0x4000000C (enable field)
-# then find MOV byte [rsp+N+4], 0x00 (state=disable) within next 48 bytes
-# patch state byte from 0x00 to 0x01
+enable_val=bytes([0x0C,0x00,0x00,0x40])
+
 for i in range(len(d)-8):
-    if d[i]==0xC7 and d[i+1]==0x44 and d[i+2]==0x24 and d[i+4:i+8]==bytes([0x0C,0x00,0x00,0x40]):
-        off = d[i+3]
-        state_off = (off + 4) & 0xFF
-        for j in range(i+8, min(i+48, len(d)-5)):
-            if d[j]==0xC6 and d[j+1]==0x44 and d[j+2]==0x24 and d[j+3]==state_off and d[j+4]==0x00:
-                d[j+4]=0x01; n+=1
-                print(f"  PATCHED: enable@0x{i:08x} state@0x{j:08x} (0x00->0x01)")
+    # MOV [rsp+N], 0x4000000C
+    if d[i]==0xC7 and d[i+1]==0x44 and d[i+2]==0x24 and d[i+4:i+8]==enable_val:
+        off=d[i+3]
+        window=d[i+8:i+40]
+
+        # Strategy 1: look for MOV ecx,0 (b9 00 00 00 00) -> patch to MOV ecx,1
+        for j in range(len(window)-4):
+            if window[j]==0xB9 and window[j+1]==0x00 and window[j+2]==0x00 and window[j+3]==0x00 and window[j+4]==0x00:
+                abs_j=i+8+j
+                d[abs_j+1]=0x01; n+=1
+                print(f"  PATCHED(ecx=0->1) enable@0x{i:08x} state@0x{abs_j:08x}")
                 break
 
-# Also try: full BE TPM packet pattern (vboot tpm2_lite)
+        # Strategy 2: look for XOR reg,reg then patch with nop or mov ecx,1
+        # (only if strategy 1 didn't patch)
+        # Strategy 3: C6 44 24 N+4, 00 -> patch to 01
+        for j in range(len(window)-4):
+            if window[j]==0xC6 and window[j+1]==0x44 and window[j+2]==0x24 and window[j+3]==(off+4)&0xFF and window[j+4]==0x00:
+                abs_j=i+8+j
+                d[abs_j+4]=0x01; n+=1
+                print(f"  PATCHED(byte[rsp+N+4]=0->1) enable@0x{i:08x} state@0x{abs_j:08x}")
+                break
+
+# Fallback: full BE TPM packet
 patA=bytes([0x40,0x00,0x00,0x0C,0x00,0x00,0x00,0x09,0x40,0x00,0x00,0x09,
             0x00,0x00,0x01,0x00,0x00,0x40,0x00,0x00,0x0C,0x00])
 for i in range(len(d)-len(patA)):
     if d[i:i+len(patA)]==patA:
         d[i+len(patA)-1]=0x01; n+=1
-        print(f"  PATCHED: TPM packet@0x{i:08x}")
+        print(f"  PATCHED(TPM packet) @0x{i:08x}")
 
+print(f"  Total patches: {n}")
 if n==0:
     print(f"  No patchable pattern found in {sys.argv[1]}")
-print(f"  Total patches: {n}")
 with open(sys.argv[2],'wb') as f: f.write(d)
 PYEOF
 }
 
-# ─── Firmware Patch Flow ─────────────────────────────────────────────────────
 patch_firmware() {
     echo -e "${YELLOW}Patches firmware to keep platform hierarchy enabled.${NC}"
     echo -e "${RED}Brick risk. Ensure SPI WP is off.${NC}"
@@ -279,7 +272,7 @@ patch_firmware() {
     elif echo "$wp" | grep -qi "disabled\|WP: status: 0\|Protection mode: disabled"; then
         echo -e "${GREEN}      WP off.${NC}"
     else
-        echo -e "${YELLOW}      WP status unclear. Continue? (y/N):${NC} "; read -r c </dev/tty
+        echo -e "${YELLOW}      WP unclear. Continue? (y/N):${NC} "; read -r c </dev/tty
         [[ "$c" != "y" && "$c" != "Y" ]] && return
     fi
 
@@ -303,7 +296,7 @@ patch_firmware() {
         local patch_out
         patch_out=$(patch_region "$WORKDIR/$region" "$WORKDIR/${region}.p" 2>&1)
         echo "$patch_out"
-        if echo "$patch_out" | grep -q "PATCHED:"; then
+        if echo "$patch_out" | grep -q "PATCHED"; then
             found_patch=1
         fi
         cp "$WORKDIR/${region}.p" "$WORKDIR/$region"
@@ -339,7 +332,7 @@ patch_firmware() {
         /usr/share/vboot/bin/make_dev_firmware.sh --nomod_hwid --nomod_gbb 2>/dev/null
         if [[ $? -ne 0 ]]; then
             echo -e "${RED}      Signing failed.${NC}"
-            echo -e "${YELLOW}      (f) Force flash unsigned  (R) Return${NC}"
+            echo -e "${YELLOW}      (f) Force unsigned  (R) Return${NC}"
             echo -n "      > "; read -r fc </dev/tty
             [[ "$fc" != "f" && "$fc" != "F" ]] && return
         fi
@@ -361,11 +354,10 @@ patch_firmware() {
     read -r </dev/tty
 }
 
-# ─── Credits ─────────────────────────────────────────────────────────────────
 show_credits() {
     clear
     echo -e "${CYAN}================================${NC}"
-    echo -e "${CYAN}          R-Patch v6.5${NC}"
+    echo -e "${CYAN}          R-Patch v6.6${NC}"
     echo -e "${CYAN}================================${NC}"
     echo -e " ${BOLD}Code${NC}       : CriticalHD"
     echo -e " ${BOLD}KVS Ref${NC}    : kxtzownsu"
@@ -377,7 +369,6 @@ show_credits() {
     read -r </dev/tty
 }
 
-# ─── Init + Loop ─────────────────────────────────────────────────────────────
 get_info
 
 while true; do
