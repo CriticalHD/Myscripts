@@ -201,47 +201,78 @@ patch_region() {
     local file="$1" out="$2"
     python3 - "$file" "$out" <<'PYEOF'
 import sys
-with open(sys.argv[1],'rb') as f: d=bytearray(f.read())
-n=0
 
-enable_val=bytes([0x0C,0x00,0x00,0x40])
+with open(sys.argv[1], 'rb') as f:
+    d = bytearray(f.read())
+n = 0
 
-for i in range(len(d)-8):
-    # MOV [rsp+N], 0x4000000C
-    if d[i]==0xC7 and d[i+1]==0x44 and d[i+2]==0x24 and d[i+4:i+8]==enable_val:
-        off=d[i+3]
-        window=d[i+8:i+40]
+# 0x4000000C (TPM_RH_PLATFORM) in Little Endian
+enable_val = bytes([0x0C, 0x00, 0x00, 0x40])
 
-        # Strategy 1: look for MOV ecx,0 (b9 00 00 00 00) -> patch to MOV ecx,1
-        for j in range(len(window)-4):
-            if window[j]==0xB9 and window[j+1]==0x00 and window[j+2]==0x00 and window[j+3]==0x00 and window[j+4]==0x00:
-                abs_j=i+8+j
-                d[abs_j+1]=0x01; n+=1
-                print(f"  PATCHED(ecx=0->1) enable@0x{i:08x} state@0x{abs_j:08x}")
+for i in range(len(d) - 8):
+    # Match: MOV dword [rsp+N], 0x4000000C
+    if d[i] == 0xC7 and d[i+1] == 0x44 and d[i+2] == 0x24 and d[i+4:i+8] == enable_val:
+        off = d[i+3]
+        window = d[i+8:i+40]
+        patched = False
+
+        # Strategy 1: MOV ecx, 0 (B9 00 00 00 00) -> MOV ecx, 1 (B9 01 00 00 00)
+        for j in range(len(window) - 4):
+            if window[j] == 0xB9 and window[j+1] == 0x00 and window[j+2] == 0x00 and window[j+3] == 0x00 and window[j+4] == 0x00:
+                abs_j = i + 8 + j
+                d[abs_j+1] = 0x01
+                n += 1
+                print(f"  PATCHED (ecx=0->1) enable@0x{i:08x} state@0x{abs_j:08x}")
+                patched = True
+                break
+        if patched: continue
+
+        # Strategy 2: XOR zeroing -> Replace with 2-byte MOV (8-bit)
+        # xor ecx, ecx (31 C9) -> mov cl, 1 (B1 01)
+        # xor eax, eax (31 C0) -> mov al, 1 (B0 01)
+        for j in range(len(window) - 1):
+            if window[j] == 0x31 and window[j+1] == 0xC9:
+                abs_j = i + 8 + j
+                d[abs_j] = 0xB1     # mov cl
+                d[abs_j+1] = 0x01   # 1
+                n += 1
+                print(f"  PATCHED (xor ecx->mov cl,1) enable@0x{i:08x} state@0x{abs_j:08x}")
+                patched = True
+                break
+            elif window[j] == 0x31 and window[j+1] == 0xC0:
+                abs_j = i + 8 + j
+                d[abs_j] = 0xB0     # mov al
+                d[abs_j+1] = 0x01   # 1
+                n += 1
+                print(f"  PATCHED (xor eax->mov al,1) enable@0x{i:08x} state@0x{abs_j:08x}")
+                patched = True
+                break
+        if patched: continue
+
+        # Strategy 3: Stack move - MOV byte [rsp+N+4], 00 -> 01
+        for j in range(len(window) - 4):
+            if window[j] == 0xC6 and window[j+1] == 0x44 and window[j+2] == 0x24 and window[j+3] == (off+4) & 0xFF and window[j+4] == 0x00:
+                abs_j = i + 8 + j
+                d[abs_j+4] = 0x01
+                n += 1
+                print(f"  PATCHED (byte[rsp+N+4]=0->1) enable@0x{i:08x} state@0x{abs_j:08x}")
                 break
 
-        # Strategy 2: look for XOR reg,reg then patch with nop or mov ecx,1
-        # (only if strategy 1 didn't patch)
-        # Strategy 3: C6 44 24 N+4, 00 -> patch to 01
-        for j in range(len(window)-4):
-            if window[j]==0xC6 and window[j+1]==0x44 and window[j+2]==0x24 and window[j+3]==(off+4)&0xFF and window[j+4]==0x00:
-                abs_j=i+8+j
-                d[abs_j+4]=0x01; n+=1
-                print(f"  PATCHED(byte[rsp+N+4]=0->1) enable@0x{i:08x} state@0x{abs_j:08x}")
-                break
+# Fallback: full BE TPM packet (Hardcoded sequence)
+patA = bytes([0x40,0x00,0x00,0x0C,0x00,0x00,0x00,0x09,0x40,0x00,0x00,0x09,
+              0x00,0x00,0x01,0x00,0x00,0x40,0x00,0x00,0x0C,0x00])
+for i in range(len(d) - len(patA)):
+    if d[i:i+len(patA)] == patA:
+        d[i+len(patA)-1] = 0x01
+        n += 1
+        print(f"  PATCHED (TPM packet fallback) @0x{i:08x}")
 
-# Fallback: full BE TPM packet
-patA=bytes([0x40,0x00,0x00,0x0C,0x00,0x00,0x00,0x09,0x40,0x00,0x00,0x09,
-            0x00,0x00,0x01,0x00,0x00,0x40,0x00,0x00,0x0C,0x00])
-for i in range(len(d)-len(patA)):
-    if d[i:i+len(patA)]==patA:
-        d[i+len(patA)-1]=0x01; n+=1
-        print(f"  PATCHED(TPM packet) @0x{i:08x}")
-
-print(f"  Total patches: {n}")
-if n==0:
+print(f"  Total patches applied: {n}")
+if n == 0:
     print(f"  No patchable pattern found in {sys.argv[1]}")
-with open(sys.argv[2],'wb') as f: f.write(d)
+    
+with open(sys.argv[2], 'wb') as f:
+    f.write(d)
 PYEOF
 }
 
