@@ -66,7 +66,7 @@ is_fw_patched() { [[ -f "$PATCH_FLAG" ]]; }
 draw_header() {
     clear
     echo -e "${CYAN}================================${NC}"
-    echo -e "${CYAN}  ${BOLD}R-Patch v6.6${NC}  ${CYAN}·  CriticalHD${NC}"
+    echo -e "${CYAN}  ${BOLD}R-Patch v6.7${NC}  ${CYAN}·  CriticalHD${NC}"
     echo -e "${CYAN}================================${NC}"
     if is_fw_patched; then
         echo -e " Firmware  : ${GREEN}PATCHED${NC}"
