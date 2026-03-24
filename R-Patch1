@@ -66,7 +66,7 @@ is_fw_patched() { [[ -f "$PATCH_FLAG" ]]; }
 draw_header() {
     clear
     echo -e "${CYAN}================================${NC}"
-    echo -e "${CYAN}  ${BOLD}R-Patch v6.8${NC}  ${CYAN}·  CriticalHD${NC}"
+    echo -e "${CYAN}  ${BOLD}R-Patch v6.9${NC}  ${CYAN}·  CriticalHD${NC}"
     echo -e "${CYAN}================================${NC}"
     if is_fw_patched; then
         echo -e " Firmware  : ${GREEN}PATCHED${NC}"
@@ -203,32 +203,25 @@ patch_region() {
 import sys
 
 def patch_firmware_blob(data):
-    # TPM_RH_PLATFORM = 0x4000000C (Little Endian: 0C 00 00 40)
-    # TPM_RH_OWNER    = 0x40000001 (Little Endian: 01 00 00 40)
+    # TPM_RH_PLATFORM = 0x4000000C (0C 00 00 40)
+    # TPM_RH_OWNER    = 0x40000001 (01 00 00 40)
     target = b'\x0C\x00\x00\x40'
     patch  = b'\x01\x00\x00\x40'
     
-    # TPM_RH_PW (Password handle) is almost always used in the same function
-    # 0x40000009 (Little Endian: 09 00 00 40)
+    # Context check: TPM_RH_PW (0x40000009)
     context_const = b'\x09\x00\x00\x40'
     
     count = 0
     idx = 0
     while True:
         idx = data.find(target, idx)
-        if idx == -1:
-            break
+        if idx == -1: break
             
-        # Context Check: Is the Password Handle (09 00 00 40) nearby?
-        # This ensures we are patching the TlclSetEnablePlatform function 
-        # and not some random data table.
-        search_window = data[max(0, idx-64) : min(len(data), idx+64)]
-        
-        if context_const in search_window:
+        # Look 64 bytes around the target for the context handle
+        window = data[max(0, idx-64) : min(len(data), idx+64)]
+        if context_const in window:
             data[idx:idx+4] = patch
             count += 1
-            print(f"  [+] Found TlclSetEnablePlatform at offset 0x{idx:08x}. Swapped Handle.")
-        
         idx += 4
         
     return data, count
@@ -238,12 +231,13 @@ with open(sys.argv[1], 'rb') as f:
 
 patched_blob, n = patch_firmware_blob(blob)
 
+# CRITICAL: This print statement MUST contain "Applied [number]" 
+# so the shell script's grep/if-statement catches it.
+print(f"  Applied {n} patches.")
+
 if n > 0:
-    print(f"  [*] Successfully applied {n} handle-swap patches.")
     with open(sys.argv[2], 'wb') as f:
         f.write(patched_blob)
-else:
-    print("  [-] No valid TPM hierarchy functions found.")
 PYEOF
 }
 
