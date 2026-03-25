@@ -32,9 +32,9 @@ get_status() {
 
     current_server=$(grep "CHROMEOS_AUSERVER" "$LSB" 2>/dev/null | cut -d'=' -f2)
     if echo "$current_server" | grep -q "127.0.0.1"; then
-        niaub_state="${GREEN}ENABLED${NC}"
+        SAUB_state="${GREEN}ENABLED${NC}"
     else
-        niaub_state="${RED}DISABLED${NC}"
+        SAUB_state="${RED}DISABLED${NC}"
     fi
 }
 
@@ -46,10 +46,10 @@ show_menu() {
     echo -e "${CYAN}        Version: 3.1 | Author: CriticalHD         ${NC}"
     echo -e "${CYAN}==================================================${NC}"
     echo -e " STATUS: ${op_display}"
-    echo -e " NIAUB:  ${niaub_state}"
+    echo -e " SAUB:  ${SAUB_state}"
     echo -e "${CYAN}==================================================${NC}"
-    echo -e " ${YELLOW}1)${NC} Enable NIAUB"
-    echo -e " ${YELLOW}2)${NC} Disable NIAUB"
+    echo -e " ${YELLOW}1)${NC} Enable SAUB"
+    echo -e " ${YELLOW}2)${NC} Disable SAUB"
     echo -e " ${YELLOW}3)${NC} View Credits"
     echo -e " ${YELLOW}e)${NC} Exit"
     echo -e "${CYAN}--------------------------------------------------${NC}"
@@ -92,11 +92,11 @@ remove_rootfs_verification() {
     fi
 }
 
-enable_niaub() {
-    echo -e "\n${YELLOW}Checking if NIAUB already enabled...${NC}"
+enable_SAUB() {
+    echo -e "\n${YELLOW}Checking if SAUB already enabled...${NC}"
     current_server=$(grep "CHROMEOS_AUSERVER" "$LSB" 2>/dev/null | cut -d'=' -f2)
     if echo "$current_server" | grep -q "127.0.0.1"; then
-        echo -e "${YELLOW}NIAUB is already enabled.${NC}"
+        echo -e "${YELLOW}SAUB is already enabled.${NC}"
         echo -ne "${BLUE}Press Enter to continue...${NC}"
         read -r < /dev/tty
         return
@@ -129,7 +129,7 @@ enable_niaub() {
 
     new_server=$(grep "CHROMEOS_AUSERVER" "$LSB" 2>/dev/null | cut -d'=' -f2)
     if echo "$new_server" | grep -q "127.0.0.1"; then
-        echo -e "${GREEN}DONE. Updates permanently blocked.${NC}"
+        echo -e "${GREEN}DONE. Updates blocked until next powerwash.${NC}"
     else
         echo -e "${RED}WARNING: lsb-release may not have updated correctly.${NC}"
     fi
@@ -137,7 +137,7 @@ enable_niaub() {
     read -r < /dev/tty
 }
 
-disable_niaub() {
+disable_SAUB() {
     echo -e "\n${YELLOW}Attempting to remount rootfs as read-write...${NC}"
     if ! remount_rw; then
         remove_rootfs_verification
@@ -177,7 +177,7 @@ show_credits() {
     echo -e "${CYAN}==========================================${NC}"
     echo -e "${YELLOW}                CREDITS                   ${NC}"
     echo -e "${CYAN}==========================================${NC}"
-    echo -e "Concept:   NIAUB"
+    echo -e "Concept:   SAUB"
     echo -e "Scripting: CriticalHD/neonnebula"
     echo -e "Features:  lsb-release AUSERVER block + VPD backup"
     echo -e "${CYAN}==========================================${NC}"
@@ -189,8 +189,8 @@ while true; do
     show_menu
     read -r choice < /dev/tty
     case "$choice" in
-        1) enable_niaub ;;
-        2) disable_niaub ;;
+        1) enable_SAUB ;;
+        2) disable_SAUB ;;
         3) show_credits ;;
         e|E) echo -e "\n${BLUE}Exiting...${NC}"; exit 0 ;;
         *) echo -e "\n${RED}Invalid option.${NC}"; sleep 1 ;;
