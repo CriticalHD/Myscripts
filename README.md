@@ -2,6 +2,8 @@
 
 Contains some scripts I have made
 
+You can run most of these with just | bash (if you have root access)
+
 ## Kernel Patcher
 Oh how I hate this god forsaken script
 
