@@ -15,6 +15,6 @@ Basically patches platform hiearchy in vboot to allow tpmc write usage in vt2 wi
 ````curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/R-Patch | sudo bash````
 
 ## SAUB
-Non invasive auto update blocker. Requires vpd write access.
+Server Auto Update Blocker
 
 ````curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/NIAUB | sudo bash````
