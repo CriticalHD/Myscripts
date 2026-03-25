@@ -129,7 +129,7 @@ enable_SAUB() {
 
     new_server=$(grep "CHROMEOS_AUSERVER" "$LSB" 2>/dev/null | cut -d'=' -f2)
     if echo "$new_server" | grep -q "127.0.0.1"; then
-        echo -e "${GREEN}DONE. Updates blocked until next powerwash.${NC}"
+        echo -e "${GREEN}DONE. Updates blocked until next recovery.${NC}"
     else
         echo -e "${RED}WARNING: lsb-release may not have updated correctly.${NC}"
     fi
