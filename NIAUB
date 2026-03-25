@@ -38,7 +38,7 @@ show_menu() {
     get_status
     clear
     echo -e "${CYAN}==================================================${NC}"
-    echo -e "${CYAN}            NIAUB MANAGEMENT UTILITY              ${NC}"
+    echo -e "${CYAN}            UPDATE MANAGEMENT UTILITY              ${NC}"
     echo -e "${CYAN}        Version: 1.7 | Author: CriticalHD         ${NC}"
     echo -e "${CYAN}==================================================${NC}"
     echo -e " STATUS: $op_display"
