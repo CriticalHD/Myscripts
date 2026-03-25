@@ -7,8 +7,6 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-exec </dev/tty
-
 if [ "$EUID" -ne 0 ]; then
   echo -e "${RED}Please run this script with sudo.${NC}"
   exit 1
@@ -39,10 +37,10 @@ get_status() {
 
 show_menu() {
     get_status
-    tput clear
+    clear
     echo -e "${CYAN}==================================================${NC}"
     echo -e "${CYAN}            UPDATE MANAGEMENT UTILITY              ${NC}"
-    echo -e "${CYAN}        Version: 1.7 | Author: CriticalHD         ${NC}"
+    echo -e "${CYAN}        Version: 1.8 | Author: CriticalHD         ${NC}"
     echo -e "${CYAN}==================================================${NC}"
     echo -e " STATUS: ${op_display}"
     echo -e " NIAUB:  ${niaub_state}"
@@ -81,7 +79,7 @@ disable_niaub() {
 }
 
 show_credits() {
-    tput clear
+    clear
     echo -e "${CYAN}==========================================${NC}"
     echo -e "${YELLOW}                CREDITS                   ${NC}"
     echo -e "${CYAN}==========================================${NC}"
@@ -89,12 +87,12 @@ show_credits() {
     echo -e "Scripting: CriticalHD/neonnebula"
     echo -e "Features:  Partition reset + Cache reset + AUB"
     echo -e "${CYAN}==========================================${NC}"
-    read -rp "Press Enter to return to menu..."
+    read -rp "Press Enter to return to menu..." < /dev/tty
 }
 
 while true; do
     show_menu
-    read -r choice
+    read -r choice < /dev/tty
     case "$choice" in
         1) enable_niaub ;;
         2) disable_niaub ;;
