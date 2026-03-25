@@ -9,7 +9,7 @@ NC='\033[0m'
 
 if [ "$EUID" -ne 0 ]; then
   echo -e "${RED}Please run this script with sudo.${NC}"
-  exit
+  exit 1
 fi
 
 get_status() {
@@ -17,20 +17,20 @@ get_status() {
     [ -z "$current_op" ] && current_op="UNKNOWN"
 
     if [[ "$current_op" == "UPDATE_STATUS_IDLE" ]]; then
-        op_display="${GREEN}$current_op${NC}"
+        op_display="${GREEN}${current_op}${NC}"
     elif [[ "$current_op" == "UPDATE_STATUS_UPDATED_NEED_REBOOT" ]]; then
         op_display="${RED}REBOOT PENDING (Update Staged)${NC}"
     elif [[ "$current_op" == "UPDATE_STATUS_DOWNLOADING" ]]; then
-        op_display="${YELLOW}$current_op${NC}"
+        op_display="${YELLOW}${current_op}${NC}"
     else
-        op_display="${BLUE}$current_op${NC}"
+        op_display="${BLUE}${current_op}${NC}"
     fi
 
-    vpd_val=$(vpd -i RW_VPD -l | grep "omahaserver" | cut -d'"' -f2)
+    vpd_val=$(vpd -i RW_VPD -l 2>/dev/null | grep "omahaserver" | cut -d'"' -f2)
     if [ -z "$vpd_val" ]; then
         niaub_state="${RED}DISABLED (Default)${NC}"
     else
-        niaub_state="${GREEN}ENABLED ($vpd_val)${NC}"
+        niaub_state="${GREEN}ENABLED (${vpd_val})${NC}"
     fi
 }
 
@@ -41,8 +41,8 @@ show_menu() {
     echo -e "${CYAN}            UPDATE MANAGEMENT UTILITY              ${NC}"
     echo -e "${CYAN}        Version: 1.7 | Author: CriticalHD         ${NC}"
     echo -e "${CYAN}==================================================${NC}"
-    echo -e " STATUS: $op_display"
-    echo -e " NIAUB:  $niaub_state"
+    echo -e " STATUS: ${op_display}"
+    echo -e " NIAUB:  ${niaub_state}"
     echo -e "${CYAN}==================================================${NC}"
     echo -e " ${YELLOW}1)${NC} Enable NIAUB"
     echo -e " ${YELLOW}2)${NC} Disable NIAUB"
@@ -86,13 +86,14 @@ show_credits() {
     echo -e "Scripting: CriticalHD/neonnebula"
     echo -e "Features:  Partition reset + Cache reset + AUB"
     echo -e "${CYAN}==========================================${NC}"
-    read -p "Press Enter to return to menu..."
+    read -rp "Press Enter to return to menu..."
 }
 
 while true; do
     show_menu
-    read choice
-    case $choice in
+    read -r choice
+    echo ""
+    case "$choice" in
         1) enable_niaub ;;
         2) disable_niaub ;;
         3) show_credits ;;
