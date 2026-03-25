@@ -29,15 +29,10 @@ get_status() {
 
     vpd_val=$(vpd -i RW_VPD -l 2>/dev/null | grep "omahaserver" | cut -d'"' -f2)
     if [ -z "$vpd_val" ]; then
-        niaub_state="${RED}NOT BLOCKED${NC}"
+        niaub_state="${RED}DISABLED${NC}"
     else
-        niaub_state="${GREEN}BLOCKED ($vpd_val)${NC}"
+        niaub_state="${GREEN}ENABLED${NC}"
     fi
-}
-
-pause() {
-    echo -ne "\n${BLUE}Press Enter to continue...${NC}"
-    read -r < /dev/tty
 }
 
 show_menu() {
@@ -45,25 +40,25 @@ show_menu() {
     clear
     echo -e "${CYAN}==================================================${NC}"
     echo -e "${CYAN}            UPDATE MANAGEMENT UTILITY              ${NC}"
-    echo -e "${CYAN}        Version: 2.0 | Author: CriticalHD         ${NC}"
+    echo -e "${CYAN}        Version: 1.7 | Author: CriticalHD         ${NC}"
     echo -e "${CYAN}==================================================${NC}"
-    echo -e " STATUS:  ${op_display}"
-    echo -e " UPDATES: ${niaub_state}"
+    echo -e " STATUS: ${op_display}"
+    echo -e " NIAUB:  ${niaub_state}"
     echo -e "${CYAN}==================================================${NC}"
-    echo -e " ${YELLOW}1)${NC} Block Updates"
-    echo -e " ${YELLOW}2)${NC} Unblock Updates"
+    echo -e " ${YELLOW}1)${NC} Enable NIAUB"
+    echo -e " ${YELLOW}2)${NC} Disable NIAUB"
     echo -e " ${YELLOW}3)${NC} View Credits"
     echo -e " ${YELLOW}e)${NC} Exit"
     echo -e "${CYAN}--------------------------------------------------${NC}"
     echo -ne "${BLUE}Select an option: ${NC}"
 }
 
-block_updates() {
+enable_niaub() {
     echo -e "\n${YELLOW}Stopping update-engine...${NC}"
     stop update-engine >/dev/null 2>&1
     sleep 1
 
-    echo -e "${YELLOW}Writing VPD redirect...${NC}"
+    echo -e "${YELLOW}Writing VPD block...${NC}"
     vpd -i RW_VPD -s "omahaserver=http://127.0.0.1"
 
     echo -e "${YELLOW}Purging update cache...${NC}"
@@ -74,23 +69,18 @@ block_updates() {
 
     echo -e "${YELLOW}Restarting update-engine...${NC}"
     start update-engine >/dev/null 2>&1
-    sleep 1
 
-    vpd_check=$(vpd -i RW_VPD -l 2>/dev/null | grep "omahaserver" | cut -d'"' -f2)
-    if [ -n "$vpd_check" ]; then
-        echo -e "${GREEN}Done. Updates blocked. VPD persists across reboots.${NC}"
-    else
-        echo -e "${RED}WARNING: VPD write may have failed.${NC}"
-    fi
-    pause
+    echo -e "${GREEN}DONE.${NC}"
+    echo -ne "${BLUE}Press Enter to continue...${NC}"
+    read -r < /dev/tty
 }
 
-unblock_updates() {
+disable_niaub() {
     echo -e "\n${YELLOW}Stopping update-engine...${NC}"
     stop update-engine >/dev/null 2>&1
     sleep 1
 
-    echo -e "${YELLOW}Removing VPD redirect...${NC}"
+    echo -e "${YELLOW}Removing VPD block...${NC}"
     vpd -i RW_VPD -d "omahaserver"
 
     echo -e "${YELLOW}Purging update cache...${NC}"
@@ -98,15 +88,10 @@ unblock_updates() {
 
     echo -e "${YELLOW}Restarting update-engine...${NC}"
     start update-engine >/dev/null 2>&1
-    sleep 1
 
-    vpd_check=$(vpd -i RW_VPD -l 2>/dev/null | grep "omahaserver")
-    if [ -z "$vpd_check" ]; then
-        echo -e "${GREEN}Done. Updates unblocked.${NC}"
-    else
-        echo -e "${RED}WARNING: VPD entry may not have been removed.${NC}"
-    fi
-    pause
+    echo -e "${GREEN}DONE.${NC}"
+    echo -ne "${BLUE}Press Enter to continue...${NC}"
+    read -r < /dev/tty
 }
 
 show_credits() {
@@ -118,15 +103,16 @@ show_credits() {
     echo -e "Scripting: CriticalHD/neonnebula"
     echo -e "Features:  Partition reset + Cache reset + AUB"
     echo -e "${CYAN}==========================================${NC}"
-    pause
+    echo -ne "${BLUE}Press Enter to continue...${NC}"
+    read -r < /dev/tty
 }
 
 while true; do
     show_menu
     read -r choice < /dev/tty
     case "$choice" in
-        1) block_updates ;;
-        2) unblock_updates ;;
+        1) enable_niaub ;;
+        2) disable_niaub ;;
         3) show_credits ;;
         e|E) echo -e "\n${BLUE}Exiting...${NC}"; exit 0 ;;
         *) echo -e "\n${RED}Invalid option.${NC}"; sleep 1 ;;
