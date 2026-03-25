@@ -7,14 +7,13 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}Please run this script with sudo.${NC}"
-  exit 1
-fi
+LSB="/etc/lsb-release"
+DEAD_SERVER="http://127.0.0.1/noupdate"
 
-# Fake HWID: valid format/checksum, but board name doesn't exist in Google's DB
-# Format: BOARD BOM where BOM triplets end in valid CRC bits
-FAKE_HWID="NOUPDATE D2B-D2Q-H7A-A25"
+if [ "$EUID" -ne 0 ]; then
+    echo -e "${RED}Please run this script with sudo.${NC}"
+    exit 1
+fi
 
 get_status() {
     current_op=$(update_engine_client --status 2>/dev/null | grep "CURRENT_OP" | cut -d'=' -f2 | tr -d '[:space:]')
@@ -31,11 +30,8 @@ get_status() {
         *)                                 op_display="${BLUE}${current_op}${NC}" ;;
     esac
 
-    # Check if old_hwid backup exists in RW_VPD (means NIAUB is active)
-    old_hwid=$(vpd -i RW_VPD -l 2>/dev/null | grep '"old_hwid"' | cut -d'"' -f4)
-    live_hwid=$(crossystem hwid 2>/dev/null)
-
-    if [ -n "$old_hwid" ]; then
+    current_server=$(grep "CHROMEOS_AUSERVER" "$LSB" 2>/dev/null | cut -d'=' -f2)
+    if echo "$current_server" | grep -q "127.0.0.1"; then
         niaub_state="${GREEN}ENABLED${NC}"
     else
         niaub_state="${RED}DISABLED${NC}"
@@ -47,7 +43,7 @@ show_menu() {
     clear
     echo -e "${CYAN}==================================================${NC}"
     echo -e "${CYAN}            UPDATE MANAGEMENT UTILITY              ${NC}"
-    echo -e "${CYAN}        Version: 2.1 | Author: CriticalHD         ${NC}"
+    echo -e "${CYAN}        Version: 3.1 | Author: CriticalHD         ${NC}"
     echo -e "${CYAN}==================================================${NC}"
     echo -e " STATUS: ${op_display}"
     echo -e " NIAUB:  ${niaub_state}"
@@ -60,88 +56,118 @@ show_menu() {
     echo -ne "${BLUE}Select an option: ${NC}"
 }
 
+remount_rw() {
+    mount -o remount,rw / 2>/dev/null
+    if ! touch /.test 2>/dev/null; then
+        return 1
+    fi
+    rm -f /.test
+    return 0
+}
+
+remount_ro() {
+    mount -o remount,ro / 2>/dev/null
+}
+
+remove_rootfs_verification() {
+    echo -e "${YELLOW}Rootfs is still verified/read-only.${NC}"
+    echo -e "${YELLOW}Running make_dev_ssd to remove rootfs verification...${NC}"
+    /usr/share/vboot/bin/make_dev_ssd.sh --remove_rootfs_verification --force 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Done. A reboot is required to apply the change.${NC}"
+        echo -ne "${YELLOW}Reboot now? (y/n): ${NC}"
+        read -r confirm < /dev/tty
+        if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+            reboot
+        else
+            echo -e "${YELLOW}Reboot manually and re-run this script to continue.${NC}"
+            echo -ne "${BLUE}Press Enter to exit...${NC}"
+            read -r < /dev/tty
+            exit 0
+        fi
+    else
+        echo -e "${RED}make_dev_ssd failed. Your device may not support this.${NC}"
+        echo -ne "${BLUE}Press Enter to continue...${NC}"
+        read -r < /dev/tty
+    fi
+}
+
 enable_niaub() {
-    echo -e "\n${YELLOW}Checking current state...${NC}"
-
-    # Don't double-enable
-    old_hwid=$(vpd -i RW_VPD -l 2>/dev/null | grep '"old_hwid"' | cut -d'"' -f4)
-    if [ -n "$old_hwid" ]; then
-        echo -e "${YELLOW}NIAUB already enabled. Old HWID backed up as: $old_hwid${NC}"
+    echo -e "\n${YELLOW}Checking if NIAUB already enabled...${NC}"
+    current_server=$(grep "CHROMEOS_AUSERVER" "$LSB" 2>/dev/null | cut -d'=' -f2)
+    if echo "$current_server" | grep -q "127.0.0.1"; then
+        echo -e "${YELLOW}NIAUB is already enabled.${NC}"
         echo -ne "${BLUE}Press Enter to continue...${NC}"
         read -r < /dev/tty
         return
     fi
 
-    # Read current real HWID
-    real_hwid=$(crossystem hwid 2>/dev/null)
-    if [ -z "$real_hwid" ]; then
-        echo -e "${RED}Could not read current HWID. Aborting.${NC}"
-        echo -ne "${BLUE}Press Enter to continue...${NC}"
-        read -r < /dev/tty
+    echo -e "${YELLOW}Attempting to remount rootfs as read-write...${NC}"
+    if ! remount_rw; then
+        remove_rootfs_verification
         return
     fi
+    echo -e "${GREEN}Rootfs is writable.${NC}"
 
-    echo -e "${YELLOW}Backing up real HWID: $real_hwid${NC}"
-    vpd -i RW_VPD -s "old_hwid=$real_hwid"
+    echo -e "${YELLOW}Backing up original AUSERVER to RW_VPD...${NC}"
+    vpd -i RW_VPD -s "old_auserver=$current_server"
 
-    echo -e "${YELLOW}Writing fake HWID to GBB...${NC}"
-    if ! /usr/share/vboot/bin/set_gbb_flags.sh 2>/dev/null; then
-        # fallback: use gbb_utility directly
-        true
-    fi
-    gbb_utility --set --hwid="$FAKE_HWID" /dev/mtd0 2>/dev/null || \
-    gbb_utility --set --hwid="$FAKE_HWID" /dev/mtd 2>/dev/null || \
-    futility gbb --set --hwid="$FAKE_HWID" /dev/mtd0 2>/dev/null
-
-    echo -e "${YELLOW}Also writing VPD redirect as secondary block...${NC}"
-    vpd -i RW_VPD -s "omahaserver=http://127.0.0.1"
+    echo -e "${YELLOW}Redirecting CHROMEOS_AUSERVER to dead endpoint...${NC}"
+    sed -i "s|CHROMEOS_AUSERVER=.*|CHROMEOS_AUSERVER=$DEAD_SERVER|" "$LSB"
 
     echo -e "${YELLOW}Stopping update-engine and purging cache...${NC}"
     stop update-engine >/dev/null 2>&1
     rm -rf /var/lib/update_engine/prefs/*
     /usr/sbin/chromeos-setgoodkernel >/dev/null 2>&1
+
+    echo -e "${YELLOW}Remounting rootfs back to read-only...${NC}"
+    remount_ro
+    echo -e "${GREEN}Rootfs integrity restored (read-only).${NC}"
+
+    echo -e "${YELLOW}Restarting update-engine...${NC}"
     start update-engine >/dev/null 2>&1
 
-    # Verify backup saved
-    saved=$(vpd -i RW_VPD -l 2>/dev/null | grep '"old_hwid"' | cut -d'"' -f4)
-    if [ -n "$saved" ]; then
-        echo -e "${GREEN}DONE. HWID spoofed. Updates will find no matching device.${NC}"
-        echo -e "${GREEN}Real HWID safely backed up in RW_VPD.${NC}"
+    new_server=$(grep "CHROMEOS_AUSERVER" "$LSB" 2>/dev/null | cut -d'=' -f2)
+    if echo "$new_server" | grep -q "127.0.0.1"; then
+        echo -e "${GREEN}DONE. Updates permanently blocked.${NC}"
     else
-        echo -e "${RED}WARNING: Backup may not have saved. Check VPD manually.${NC}"
+        echo -e "${RED}WARNING: lsb-release may not have updated correctly.${NC}"
     fi
     echo -ne "${BLUE}Press Enter to continue...${NC}"
     read -r < /dev/tty
 }
 
 disable_niaub() {
-    echo -e "\n${YELLOW}Restoring original HWID...${NC}"
-
-    old_hwid=$(vpd -i RW_VPD -l 2>/dev/null | grep '"old_hwid"' | cut -d'"' -f4)
-    if [ -z "$old_hwid" ]; then
-        echo -e "${RED}No backed up HWID found in RW_VPD. Cannot restore.${NC}"
-        echo -ne "${BLUE}Press Enter to continue...${NC}"
-        read -r < /dev/tty
+    echo -e "\n${YELLOW}Attempting to remount rootfs as read-write...${NC}"
+    if ! remount_rw; then
+        remove_rootfs_verification
         return
     fi
 
-    echo -e "${YELLOW}Restoring HWID: $old_hwid${NC}"
-    gbb_utility --set --hwid="$old_hwid" /dev/mtd0 2>/dev/null || \
-    gbb_utility --set --hwid="$old_hwid" /dev/mtd 2>/dev/null || \
-    futility gbb --set --hwid="$old_hwid" /dev/mtd0 2>/dev/null
+    old_server=$(vpd -i RW_VPD -l 2>/dev/null | grep '"old_auserver"' | cut -d'"' -f4)
+    if [ -z "$old_server" ]; then
+        echo -e "${YELLOW}No backup found in RW_VPD. Restoring to default Google server.${NC}"
+        old_server="https://tools.google.com/service/update2"
+    fi
 
-    echo -e "${YELLOW}Removing VPD redirect...${NC}"
-    vpd -i RW_VPD -d "omahaserver" 2>/dev/null
+    echo -e "${YELLOW}Restoring AUSERVER to: $old_server${NC}"
+    sed -i "s|CHROMEOS_AUSERVER=.*|CHROMEOS_AUSERVER=$old_server|" "$LSB"
 
-    echo -e "${YELLOW}Removing old_hwid backup key...${NC}"
-    vpd -i RW_VPD -d "old_hwid"
+    echo -e "${YELLOW}Removing backup from RW_VPD...${NC}"
+    vpd -i RW_VPD -d "old_auserver" 2>/dev/null
 
-    echo -e "${YELLOW}Restarting update-engine...${NC}"
+    echo -e "${YELLOW}Stopping update-engine and purging cache...${NC}"
     stop update-engine >/dev/null 2>&1
     rm -rf /var/lib/update_engine/prefs/*
+
+    echo -e "${YELLOW}Remounting rootfs back to read-only...${NC}"
+    remount_ro
+    echo -e "${GREEN}Rootfs integrity restored (read-only).${NC}"
+
+    echo -e "${YELLOW}Restarting update-engine...${NC}"
     start update-engine >/dev/null 2>&1
 
-    echo -e "${GREEN}DONE. Original HWID restored. Updates will work normally.${NC}"
+    echo -e "${GREEN}DONE. Updates restored.${NC}"
     echo -ne "${BLUE}Press Enter to continue...${NC}"
     read -r < /dev/tty
 }
@@ -153,7 +179,7 @@ show_credits() {
     echo -e "${CYAN}==========================================${NC}"
     echo -e "Concept:   NIAUB"
     echo -e "Scripting: CriticalHD/neonnebula"
-    echo -e "Features:  HWID spoof + VPD backup + restore"
+    echo -e "Features:  lsb-release AUSERVER block + VPD backup"
     echo -e "${CYAN}==========================================${NC}"
     echo -ne "${BLUE}Press Enter to continue...${NC}"
     read -r < /dev/tty
