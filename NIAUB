@@ -39,7 +39,7 @@ show_menu() {
     clear
     echo -e "${CYAN}==================================================${NC}"
     echo -e "${CYAN}            NIAUB MANAGEMENT UTILITY              ${NC}"
-    echo -e "${CYAN}            Version: 1.7 | Author: CriticalHD         ${NC}"
+    echo -e "${CYAN}        Version: 1.7 | Author: CriticalHD         ${NC}"
     echo -e "${CYAN}==================================================${NC}"
     echo -e " STATUS: $op_display"
     echo -e " NIAUB:  $niaub_state"
