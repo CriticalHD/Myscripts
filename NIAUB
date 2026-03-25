@@ -12,6 +12,10 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# Fake HWID: valid format/checksum, but board name doesn't exist in Google's DB
+# Format: BOARD BOM where BOM triplets end in valid CRC bits
+FAKE_HWID="NOUPDATE D2B-D2Q-H7A-A25"
+
 get_status() {
     current_op=$(update_engine_client --status 2>/dev/null | grep "CURRENT_OP" | cut -d'=' -f2 | tr -d '[:space:]')
     [ -z "$current_op" ] && current_op="UNKNOWN"
@@ -27,11 +31,14 @@ get_status() {
         *)                                 op_display="${BLUE}${current_op}${NC}" ;;
     esac
 
-    vpd_val=$(vpd -i RW_VPD -l 2>/dev/null | grep "omahaserver" | cut -d'"' -f2)
-    if [ -z "$vpd_val" ]; then
-        niaub_state="${RED}DISABLED${NC}"
-    else
+    # Check if old_hwid backup exists in RW_VPD (means NIAUB is active)
+    old_hwid=$(vpd -i RW_VPD -l 2>/dev/null | grep '"old_hwid"' | cut -d'"' -f4)
+    live_hwid=$(crossystem hwid 2>/dev/null)
+
+    if [ -n "$old_hwid" ]; then
         niaub_state="${GREEN}ENABLED${NC}"
+    else
+        niaub_state="${RED}DISABLED${NC}"
     fi
 }
 
@@ -40,7 +47,7 @@ show_menu() {
     clear
     echo -e "${CYAN}==================================================${NC}"
     echo -e "${CYAN}            UPDATE MANAGEMENT UTILITY              ${NC}"
-    echo -e "${CYAN}        Version: 1.7 | Author: CriticalHD         ${NC}"
+    echo -e "${CYAN}        Version: 2.1 | Author: CriticalHD         ${NC}"
     echo -e "${CYAN}==================================================${NC}"
     echo -e " STATUS: ${op_display}"
     echo -e " NIAUB:  ${niaub_state}"
@@ -54,42 +61,87 @@ show_menu() {
 }
 
 enable_niaub() {
-    echo -e "\n${YELLOW}Stopping update-engine...${NC}"
-    stop update-engine >/dev/null 2>&1
-    sleep 1
+    echo -e "\n${YELLOW}Checking current state...${NC}"
 
-    echo -e "${YELLOW}Writing VPD block...${NC}"
+    # Don't double-enable
+    old_hwid=$(vpd -i RW_VPD -l 2>/dev/null | grep '"old_hwid"' | cut -d'"' -f4)
+    if [ -n "$old_hwid" ]; then
+        echo -e "${YELLOW}NIAUB already enabled. Old HWID backed up as: $old_hwid${NC}"
+        echo -ne "${BLUE}Press Enter to continue...${NC}"
+        read -r < /dev/tty
+        return
+    fi
+
+    # Read current real HWID
+    real_hwid=$(crossystem hwid 2>/dev/null)
+    if [ -z "$real_hwid" ]; then
+        echo -e "${RED}Could not read current HWID. Aborting.${NC}"
+        echo -ne "${BLUE}Press Enter to continue...${NC}"
+        read -r < /dev/tty
+        return
+    fi
+
+    echo -e "${YELLOW}Backing up real HWID: $real_hwid${NC}"
+    vpd -i RW_VPD -s "old_hwid=$real_hwid"
+
+    echo -e "${YELLOW}Writing fake HWID to GBB...${NC}"
+    if ! /usr/share/vboot/bin/set_gbb_flags.sh 2>/dev/null; then
+        # fallback: use gbb_utility directly
+        true
+    fi
+    gbb_utility --set --hwid="$FAKE_HWID" /dev/mtd0 2>/dev/null || \
+    gbb_utility --set --hwid="$FAKE_HWID" /dev/mtd 2>/dev/null || \
+    futility gbb --set --hwid="$FAKE_HWID" /dev/mtd0 2>/dev/null
+
+    echo -e "${YELLOW}Also writing VPD redirect as secondary block...${NC}"
     vpd -i RW_VPD -s "omahaserver=http://127.0.0.1"
 
-    echo -e "${YELLOW}Purging update cache...${NC}"
+    echo -e "${YELLOW}Stopping update-engine and purging cache...${NC}"
+    stop update-engine >/dev/null 2>&1
     rm -rf /var/lib/update_engine/prefs/*
-
-    echo -e "${YELLOW}Resetting partition priority...${NC}"
     /usr/sbin/chromeos-setgoodkernel >/dev/null 2>&1
-
-    echo -e "${YELLOW}Restarting update-engine...${NC}"
     start update-engine >/dev/null 2>&1
 
-    echo -e "${GREEN}DONE.${NC}"
+    # Verify backup saved
+    saved=$(vpd -i RW_VPD -l 2>/dev/null | grep '"old_hwid"' | cut -d'"' -f4)
+    if [ -n "$saved" ]; then
+        echo -e "${GREEN}DONE. HWID spoofed. Updates will find no matching device.${NC}"
+        echo -e "${GREEN}Real HWID safely backed up in RW_VPD.${NC}"
+    else
+        echo -e "${RED}WARNING: Backup may not have saved. Check VPD manually.${NC}"
+    fi
     echo -ne "${BLUE}Press Enter to continue...${NC}"
     read -r < /dev/tty
 }
 
 disable_niaub() {
-    echo -e "\n${YELLOW}Stopping update-engine...${NC}"
-    stop update-engine >/dev/null 2>&1
-    sleep 1
+    echo -e "\n${YELLOW}Restoring original HWID...${NC}"
 
-    echo -e "${YELLOW}Removing VPD block...${NC}"
-    vpd -i RW_VPD -d "omahaserver"
+    old_hwid=$(vpd -i RW_VPD -l 2>/dev/null | grep '"old_hwid"' | cut -d'"' -f4)
+    if [ -z "$old_hwid" ]; then
+        echo -e "${RED}No backed up HWID found in RW_VPD. Cannot restore.${NC}"
+        echo -ne "${BLUE}Press Enter to continue...${NC}"
+        read -r < /dev/tty
+        return
+    fi
 
-    echo -e "${YELLOW}Purging update cache...${NC}"
-    rm -rf /var/lib/update_engine/prefs/*
+    echo -e "${YELLOW}Restoring HWID: $old_hwid${NC}"
+    gbb_utility --set --hwid="$old_hwid" /dev/mtd0 2>/dev/null || \
+    gbb_utility --set --hwid="$old_hwid" /dev/mtd 2>/dev/null || \
+    futility gbb --set --hwid="$old_hwid" /dev/mtd0 2>/dev/null
+
+    echo -e "${YELLOW}Removing VPD redirect...${NC}"
+    vpd -i RW_VPD -d "omahaserver" 2>/dev/null
+
+    echo -e "${YELLOW}Removing old_hwid backup key...${NC}"
+    vpd -i RW_VPD -d "old_hwid"
 
     echo -e "${YELLOW}Restarting update-engine...${NC}"
+    stop update-engine >/dev/null 2>&1
+    rm -rf /var/lib/update_engine/prefs/*
     start update-engine >/dev/null 2>&1
 
-    echo -e "${GREEN}DONE.${NC}"
+    echo -e "${GREEN}DONE. Original HWID restored. Updates will work normally.${NC}"
     echo -ne "${BLUE}Press Enter to continue...${NC}"
     read -r < /dev/tty
 }
@@ -101,7 +153,7 @@ show_credits() {
     echo -e "${CYAN}==========================================${NC}"
     echo -e "Concept:   NIAUB"
     echo -e "Scripting: CriticalHD/neonnebula"
-    echo -e "Features:  Partition reset + Cache reset + AUB"
+    echo -e "Features:  HWID spoof + VPD backup + restore"
     echo -e "${CYAN}==========================================${NC}"
     echo -ne "${BLUE}Press Enter to continue...${NC}"
     read -r < /dev/tty
