@@ -27,23 +27,17 @@ get_status() {
         *)                                 op_display="${BLUE}${current_op}${NC}" ;;
     esac
 
-    # Check VPD block
     vpd_val=$(vpd -i RW_VPD -l 2>/dev/null | grep "omahaserver" | cut -d'"' -f2)
-
-    # Check if update-engine is actually running
-    ue_running=$(status update-engine 2>/dev/null | grep -c "running")
-
-    # Check if override file exists
-    override_exists=0
-    [ -f /etc/init/update-engine.override ] && override_exists=1
-
-    if [ -n "$vpd_val" ] && [ "$override_exists" -eq 1 ]; then
-        niaub_state="${GREEN}BLOCKED (Full)${NC}"
-    elif [ -n "$vpd_val" ] || [ "$override_exists" -eq 1 ]; then
-        niaub_state="${YELLOW}PARTIAL${NC}"
-    else
+    if [ -z "$vpd_val" ]; then
         niaub_state="${RED}NOT BLOCKED${NC}"
+    else
+        niaub_state="${GREEN}BLOCKED ($vpd_val)${NC}"
     fi
+}
+
+pause() {
+    echo -ne "\n${BLUE}Press Enter to continue...${NC}"
+    read -r < /dev/tty
 }
 
 show_menu() {
@@ -56,7 +50,7 @@ show_menu() {
     echo -e " STATUS:  ${op_display}"
     echo -e " UPDATES: ${niaub_state}"
     echo -e "${CYAN}==================================================${NC}"
-    echo -e " ${YELLOW}1)${NC} Block Updates (Persistent)"
+    echo -e " ${YELLOW}1)${NC} Block Updates"
     echo -e " ${YELLOW}2)${NC} Unblock Updates"
     echo -e " ${YELLOW}3)${NC} View Credits"
     echo -e " ${YELLOW}e)${NC} Exit"
@@ -69,11 +63,8 @@ block_updates() {
     stop update-engine >/dev/null 2>&1
     sleep 1
 
-    echo -e "${YELLOW}Writing VPD redirect (blocks omaha server)...${NC}"
+    echo -e "${YELLOW}Writing VPD redirect...${NC}"
     vpd -i RW_VPD -s "omahaserver=http://127.0.0.1"
-
-    echo -e "${YELLOW}Disabling update-engine service (persists across reboots)...${NC}"
-    echo "manual" > /etc/init/update-engine.override
 
     echo -e "${YELLOW}Purging update cache...${NC}"
     rm -rf /var/lib/update_engine/prefs/*
@@ -81,22 +72,23 @@ block_updates() {
     echo -e "${YELLOW}Resetting partition priority...${NC}"
     /usr/sbin/chromeos-setgoodkernel >/dev/null 2>&1
 
-    # Verify
-    vpd_check=$(vpd -i RW_VPD -l 2>/dev/null | grep "omahaserver")
-    override_check=0
-    [ -f /etc/init/update-engine.override ] && override_check=1
+    echo -e "${YELLOW}Restarting update-engine...${NC}"
+    start update-engine >/dev/null 2>&1
+    sleep 1
 
-    if [ -n "$vpd_check" ] && [ "$override_check" -eq 1 ]; then
-        echo -e "${GREEN}Updates fully blocked and will stay blocked after reboot.${NC}"
+    vpd_check=$(vpd -i RW_VPD -l 2>/dev/null | grep "omahaserver" | cut -d'"' -f2)
+    if [ -n "$vpd_check" ]; then
+        echo -e "${GREEN}Done. Updates blocked. VPD persists across reboots.${NC}"
     else
-        echo -e "${RED}WARNING: Something may not have applied correctly. Check manually.${NC}"
+        echo -e "${RED}WARNING: VPD write may have failed.${NC}"
     fi
-    sleep 3
+    pause
 }
 
 unblock_updates() {
-    echo -e "\n${YELLOW}Removing update-engine override...${NC}"
-    rm -f /etc/init/update-engine.override
+    echo -e "\n${YELLOW}Stopping update-engine...${NC}"
+    stop update-engine >/dev/null 2>&1
+    sleep 1
 
     echo -e "${YELLOW}Removing VPD redirect...${NC}"
     vpd -i RW_VPD -d "omahaserver"
@@ -104,20 +96,17 @@ unblock_updates() {
     echo -e "${YELLOW}Purging update cache...${NC}"
     rm -rf /var/lib/update_engine/prefs/*
 
-    echo -e "${YELLOW}Starting update-engine...${NC}"
+    echo -e "${YELLOW}Restarting update-engine...${NC}"
     start update-engine >/dev/null 2>&1
     sleep 1
 
     vpd_check=$(vpd -i RW_VPD -l 2>/dev/null | grep "omahaserver")
-    override_check=0
-    [ -f /etc/init/update-engine.override ] && override_check=1
-
-    if [ -z "$vpd_check" ] && [ "$override_check" -eq 0 ]; then
-        echo -e "${GREEN}Updates unblocked. System will check for updates normally.${NC}"
+    if [ -z "$vpd_check" ]; then
+        echo -e "${GREEN}Done. Updates unblocked.${NC}"
     else
-        echo -e "${RED}WARNING: Not fully unblocked. Run again or check manually.${NC}"
+        echo -e "${RED}WARNING: VPD entry may not have been removed.${NC}"
     fi
-    sleep 3
+    pause
 }
 
 show_credits() {
@@ -129,7 +118,7 @@ show_credits() {
     echo -e "Scripting: CriticalHD/neonnebula"
     echo -e "Features:  Partition reset + Cache reset + AUB"
     echo -e "${CYAN}==========================================${NC}"
-    read -rp "Press Enter to return to menu..." < /dev/tty
+    pause
 }
 
 while true; do
