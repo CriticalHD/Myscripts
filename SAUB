@@ -74,7 +74,7 @@ remove_rootfs_verification() {
     echo -e "${YELLOW}Running make_dev_ssd to remove rootfs verification...${NC}"
     /usr/share/vboot/bin/make_dev_ssd.sh --remove_rootfs_verification --force 2>/dev/null
     if [ $? -eq 0 ]; then
-        echo -e "${GREEN}Done. A reboot is required to apply the change. Re-run this script after the reboot${NC}"
+        echo -e "${GREEN}Done. A reboot is required to remove rootfs verification. Re-run this script after the reboot${NC}"
         echo -ne "${YELLOW}Reboot now? (y/n): ${NC}"
         read -r confirm < /dev/tty
         if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
@@ -86,7 +86,7 @@ remove_rootfs_verification() {
             exit 0
         fi
     else
-        echo -e "${RED}make_dev_ssd.sh failed. Your device may not support this.${NC}"
+        echo -e "${RED}make_dev_ssd.sh failed.${NC}"
         echo -ne "${BLUE}Press Enter to continue...${NC}"
         read -r < /dev/tty
     fi
@@ -120,9 +120,9 @@ enable_SAUB() {
     rm -rf /var/lib/update_engine/prefs/*
     /usr/sbin/chromeos-setgoodkernel >/dev/null 2>&1
 
-    echo -e "${YELLOW}Remounting rootfs back to read-only...${NC}"
+    echo -e "${YELLOW}Remounting rootfs back to RO...${NC}"
     remount_ro
-    echo -e "${GREEN}Rootfs integrity restored (read-only).${NC}"
+    echo -e "${GREEN}Rootfs integrity restored. You will still have to recover when returning to verified ${NC}"
 
     echo -e "${YELLOW}Restarting update-engine...${NC}"
     start update-engine >/dev/null 2>&1
@@ -177,7 +177,7 @@ show_credits() {
     echo -e "${CYAN}==========================================${NC}"
     echo -e "${YELLOW}                CREDITS                   ${NC}"
     echo -e "${CYAN}==========================================${NC}"
-    echo -e "Concept:   SAUB"
+    echo -e "Concept: Auto Update Blocker"
     echo -e "Scripting: CriticalHD/neonnebula"
     echo -e "Features:  lsb-release AUSERVER block + VPD backup"
     echo -e "${CYAN}==========================================${NC}"
