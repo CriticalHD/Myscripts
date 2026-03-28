@@ -1,0 +1,48 @@
+#!/bin/bash
+# Run once from VT2 as chronos
+
+set -e
+
+SSH_DIR="/home/chronos/user/.ssh"
+KEY="$SSH_DIR/id_rsa"
+STARTUP="/etc/init/sudocrosh-ssh.conf"
+
+echo "[*] Setting up SSH directory..."
+mkdir -p "$SSH_DIR"
+chmod 700 "$SSH_DIR"
+
+echo "[*] Generating SSH keypair..."
+ssh-keygen -t rsa -N "" -f "$KEY" -q 2>/dev/null || true
+
+echo "[*] Authorizing key..."
+cat "$KEY.pub" > "$SSH_DIR/authorized_keys"
+chmod 600 "$SSH_DIR/authorized_keys"
+
+echo "[*] Starting SSH daemon..."
+sudo /usr/sbin/sshd
+
+echo "[*] Installing boot persistence..."
+sudo tee "$STARTUP" > /dev/null <<'EOF'
+description "sudocrosh SSH sudo enabler"
+start on started system-services
+script
+  /usr/sbin/sshd
+end script
+EOF
+
+echo "[*] Installing sudocrosh shortcut..."
+sudo tee /usr/local/bin/sudocrosh > /dev/null <<'EOF'
+#!/bin/bash
+ssh localhost -l chronos -i /home/chronos/user/.ssh/id_rsa -o StrictHostKeyChecking=no
+EOF
+sudo chmod +x /usr/local/bin/sudocrosh
+
+echo ""
+echo "[✓] Setup complete!"
+echo ""
+echo "    From now on, just type in crosh shell:"
+echo ""
+echo "      sudocrosh"
+echo ""
+echo ""
+echo "[!] Note: A ChromeOS update may wipe persistence, run SAUB or Re-run from VT2 if that happens."
