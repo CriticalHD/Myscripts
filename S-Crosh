@@ -13,8 +13,7 @@ RESET='\033[0m'
 SSH_DIR="/home/chronos/user/.ssh"
 KEY="$SSH_DIR/id_rsa"
 STARTUP="/etc/init/sudocrosh-ssh.conf"
-BIN_DIR="/home/chronos/user/bin"
-SHORTCUT="$BIN_DIR/sudocrosh"
+SHORTCUT="/tmp/sudocrosh"
 
 step() { echo -e "${CYAN}${BOLD}[→]${RESET} ${BOLD}$1${RESET}"; }
 ok()   { echo -e "${GREEN}${BOLD}[✓]${RESET} $1"; }
@@ -79,21 +78,21 @@ script
     -o HostKey=/tmp/ssh_host_ecdsa_key \
     -o HostKey=/tmp/ssh_host_ed25519_key \
     -o AuthorizedKeysFile=/home/chronos/user/.ssh/authorized_keys
+  tee /tmp/sudocrosh > /dev/null <<'SHORTEOF'
+#!/bin/bash
+ssh localhost -l chronos -i /home/chronos/user/.ssh/id_rsa -o StrictHostKeyChecking=no
+SHORTEOF
+  chmod +x /tmp/sudocrosh
 end script
 EOF
 ok "Boot persistence installed"
 
-step "Installing sudocrosh shortcut..."
-mkdir -p "$BIN_DIR"
+step "Installing sudocrosh shortcut in /tmp..."
 tee "$SHORTCUT" > /dev/null <<'EOF'
 #!/bin/bash
 ssh localhost -l chronos -i /home/chronos/user/.ssh/id_rsa -o StrictHostKeyChecking=no
 EOF
 chmod +x "$SHORTCUT"
-
-if ! echo "$PATH" | grep -q "$BIN_DIR"; then
-  echo "export PATH=\$PATH:$BIN_DIR" >> /home/chronos/user/.bashrc
-fi
 ok "Shortcut installed at $SHORTCUT"
 
 echo ""
@@ -103,7 +102,7 @@ echo -e "${GREEN}${BOLD}╚═════════════════�
 echo ""
 echo -e "  From now on, just type in ${CYAN}${BOLD}crosh shell${RESET}:"
 echo ""
-echo -e "    ${MAGENTA}${BOLD}sudocrosh${RESET}"
+echo -e "    ${MAGENTA}${BOLD}bash /tmp/sudocrosh${RESET}"
 echo ""
 echo -e "  That's it — ${GREEN}full sudo access${RESET}, no VT2 needed!"
 echo ""
