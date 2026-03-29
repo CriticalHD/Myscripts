@@ -51,10 +51,10 @@ chmod 600 "$SSH_DIR/authorized_keys"
 ok "Key authorized"
 
 step "Generating host keys in /tmp..."
-sudo ssh-keygen -t rsa -N "" -f /tmp/ssh_host_rsa_key -q 2>/dev/null || true
-sudo ssh-keygen -t ecdsa -N "" -f /tmp/ssh_host_ecdsa_key -q 2>/dev/null || true
-sudo ssh-keygen -t ed25519 -N "" -f /tmp/ssh_host_ed25519_key -q 2>/dev/null || true
-ok "Host keys generated in /tmp/"
+[ ! -f /tmp/ssh_host_rsa_key ]   && sudo ssh-keygen -t rsa     -N "" -f /tmp/ssh_host_rsa_key   -q
+[ ! -f /tmp/ssh_host_ecdsa_key ] && sudo ssh-keygen -t ecdsa   -N "" -f /tmp/ssh_host_ecdsa_key -q
+[ ! -f /tmp/ssh_host_ed25519_key ] && sudo ssh-keygen -t ed25519 -N "" -f /tmp/ssh_host_ed25519_key -q
+ok "Host keys ready in /tmp/"
 
 step "Starting SSH daemon..."
 sudo /usr/sbin/sshd \
@@ -69,9 +69,9 @@ sudo tee "$STARTUP" > /dev/null <<'EOF'
 description "sudocrosh SSH sudo enabler"
 start on started system-services
 script
-  ssh-keygen -t rsa -N "" -f /tmp/ssh_host_rsa_key
-  ssh-keygen -t ecdsa -N "" -f /tmp/ssh_host_ecdsa_key
-  ssh-keygen -t ed25519 -N "" -f /tmp/ssh_host_ed25519_key
+  [ ! -f /tmp/ssh_host_rsa_key ]    && ssh-keygen -t rsa     -N "" -f /tmp/ssh_host_rsa_key
+  [ ! -f /tmp/ssh_host_ecdsa_key ]  && ssh-keygen -t ecdsa   -N "" -f /tmp/ssh_host_ecdsa_key
+  [ ! -f /tmp/ssh_host_ed25519_key ] && ssh-keygen -t ed25519 -N "" -f /tmp/ssh_host_ed25519_key
   /usr/sbin/sshd \
     -o HostKey=/tmp/ssh_host_rsa_key \
     -o HostKey=/tmp/ssh_host_ecdsa_key \
