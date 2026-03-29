@@ -12,6 +12,7 @@ RESET='\033[0m'
 
 SSH_DIR="/home/chronos/user/.ssh"
 KEY="$SSH_DIR/id_rsa"
+TMP_KEY="/tmp/id_rsa"
 STARTUP="/etc/init/sudocrosh-ssh.conf"
 SHORTCUT="/tmp/sudocrosh"
 
@@ -45,6 +46,11 @@ else
   ok "Keypair already exists, skipping"
 fi
 
+step "Copying key to /tmp..."
+cp "$KEY" "$TMP_KEY"
+chmod 600 "$TMP_KEY"
+ok "Key copied to $TMP_KEY"
+
 step "Authorizing key..."
 cat "$KEY.pub" > "$SSH_DIR/authorized_keys"
 chmod 600 "$SSH_DIR/authorized_keys"
@@ -73,25 +79,21 @@ script
   [ ! -f /tmp/ssh_host_rsa_key ]     && ssh-keygen -t rsa     -N "" -f /tmp/ssh_host_rsa_key
   [ ! -f /tmp/ssh_host_ecdsa_key ]   && ssh-keygen -t ecdsa   -N "" -f /tmp/ssh_host_ecdsa_key
   [ ! -f /tmp/ssh_host_ed25519_key ] && ssh-keygen -t ed25519 -N "" -f /tmp/ssh_host_ed25519_key
+  cp /home/chronos/user/.ssh/id_rsa /tmp/id_rsa
+  chmod 600 /tmp/id_rsa
   /usr/sbin/sshd \
     -o HostKey=/tmp/ssh_host_rsa_key \
     -o HostKey=/tmp/ssh_host_ecdsa_key \
     -o HostKey=/tmp/ssh_host_ed25519_key \
     -o AuthorizedKeysFile=/home/chronos/user/.ssh/authorized_keys
-  tee /tmp/sudocrosh > /dev/null <<'SHORTEOF'
-#!/bin/bash
-ssh localhost -l chronos -i /home/chronos/user/.ssh/id_rsa -o StrictHostKeyChecking=no
-SHORTEOF
+  printf '#!/bin/bash\nssh localhost -l chronos -i /tmp/id_rsa -o StrictHostKeyChecking=no\n' > /tmp/sudocrosh
   chmod +x /tmp/sudocrosh
 end script
 EOF
 ok "Boot persistence installed"
 
 step "Installing sudocrosh shortcut in /tmp..."
-tee "$SHORTCUT" > /dev/null <<'EOF'
-#!/bin/bash
-ssh localhost -l chronos -i /home/chronos/user/.ssh/id_rsa -o StrictHostKeyChecking=no
-EOF
+printf '#!/bin/bash\nssh localhost -l chronos -i /tmp/id_rsa -o StrictHostKeyChecking=no\n' > "$SHORTCUT"
 chmod +x "$SHORTCUT"
 ok "Shortcut installed at $SHORTCUT"
 
