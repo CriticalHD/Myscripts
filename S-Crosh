@@ -10,11 +10,8 @@ MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
-SSH_DIR="/home/chronos/user/.ssh"
-KEY="$SSH_DIR/id_rsa"
-TMP_KEY="/tmp/id_rsa"
-STARTUP="/etc/init/sudocrosh-ssh.conf"
-SHORTCUT="/tmp/sudocrosh"
+SUDOERS_FILE="/etc/sudoers.d/chronos"
+STARTUP="/etc/init/sudocrosh.conf"
 
 step() { echo -e "${CYAN}${BOLD}[→]${RESET} ${BOLD}$1${RESET}"; }
 ok()   { echo -e "${GREEN}${BOLD}[✓]${RESET} $1"; }
@@ -29,84 +26,50 @@ echo "  ╚════██║██║   ██║██║  ██║██�
 echo "  ███████║╚██████╔╝██████╔╝╚██████╔╝╚██████╗██║  ██║╚██████╔╝███████║██║  ██║"
 echo "  ╚══════╝ ╚═════╝ ╚═════╝  ╚═════╝  ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝"
 echo -e "${RESET}"
-echo -e "${CYAN}${BOLD}        SSH-based sudo enabler for ChromeOS crosh — Dev Mode${RESET}"
+echo -e "${CYAN}${BOLD}        sudo enabler for ChromeOS crosh — Dev Mode${RESET}"
 echo -e "${YELLOW}        ─────────────────────────────────────────────────────${RESET}"
 echo ""
 
-step "Setting up SSH directory..."
-mkdir -p "$SSH_DIR"
-chmod 700 "$SSH_DIR"
-ok "SSH directory ready"
+step "Remounting rootfs as read-write..."
+sudo mount -o remount,rw / || err "Failed to remount rootfs. Is rootfs verification off?"
+ok "Rootfs remounted as rw"
 
-step "Generating SSH keypair..."
-if [ ! -f "$KEY" ]; then
-  ssh-keygen -t rsa -N "" -f "$KEY" -q
-  ok "Keypair generated"
-else
-  ok "Keypair already exists, skipping"
-fi
+step "Adding chronos sudo permissions..."
+echo "chronos ALL=(ALL) NOPASSWD: ALL" | sudo tee "$SUDOERS_FILE" > /dev/null
+sudo chmod 0440 "$SUDOERS_FILE"
+ok "Sudo permissions granted"
 
-step "Copying key to /tmp..."
-cp "$KEY" "$TMP_KEY"
-chmod 600 "$TMP_KEY"
-ok "Key copied to $TMP_KEY"
-
-step "Authorizing key..."
-cat "$KEY.pub" > "$SSH_DIR/authorized_keys"
-chmod 600 "$SSH_DIR/authorized_keys"
-ok "Key authorized"
-
-step "Generating host keys in /tmp..."
-[ ! -f /tmp/ssh_host_rsa_key ]     && sudo ssh-keygen -t rsa     -N "" -f /tmp/ssh_host_rsa_key     -q
-[ ! -f /tmp/ssh_host_ecdsa_key ]   && sudo ssh-keygen -t ecdsa   -N "" -f /tmp/ssh_host_ecdsa_key   -q
-[ ! -f /tmp/ssh_host_ed25519_key ] && sudo ssh-keygen -t ed25519 -N "" -f /tmp/ssh_host_ed25519_key -q
-ok "Host keys ready in /tmp/"
-
-step "Starting SSH daemon..."
-sudo /usr/sbin/sshd \
-  -o HostKey=/tmp/ssh_host_rsa_key \
-  -o HostKey=/tmp/ssh_host_ecdsa_key \
-  -o HostKey=/tmp/ssh_host_ed25519_key \
-  -o AuthorizedKeysFile=/home/chronos/user/.ssh/authorized_keys \
-  2>/dev/null \
-  && ok "sshd started successfully" || err "Failed to start sshd"
+step "Remounting rootfs as read-only..."
+sudo mount -o remount,ro /
+ok "Rootfs back to read-only"
 
 step "Installing boot persistence..."
+sudo mount -o remount,rw /
 sudo tee "$STARTUP" > /dev/null <<'EOF'
-description "sudocrosh SSH sudo enabler"
+description "sudocrosh — restore chronos sudo on boot"
 start on started system-services
 script
-  [ ! -f /tmp/ssh_host_rsa_key ]     && ssh-keygen -t rsa     -N "" -f /tmp/ssh_host_rsa_key
-  [ ! -f /tmp/ssh_host_ecdsa_key ]   && ssh-keygen -t ecdsa   -N "" -f /tmp/ssh_host_ecdsa_key
-  [ ! -f /tmp/ssh_host_ed25519_key ] && ssh-keygen -t ed25519 -N "" -f /tmp/ssh_host_ed25519_key
-  cp /home/chronos/user/.ssh/id_rsa /tmp/id_rsa
-  chmod 600 /tmp/id_rsa
-  /usr/sbin/sshd \
-    -o HostKey=/tmp/ssh_host_rsa_key \
-    -o HostKey=/tmp/ssh_host_ecdsa_key \
-    -o HostKey=/tmp/ssh_host_ed25519_key \
-    -o AuthorizedKeysFile=/home/chronos/user/.ssh/authorized_keys
-  printf '#!/bin/bash\nssh localhost -l chronos -i /tmp/id_rsa -o StrictHostKeyChecking=no\n' > /tmp/sudocrosh
-  chmod +x /tmp/sudocrosh
+  mount -o remount,rw /
+  echo "chronos ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/chronos
+  chmod 0440 /etc/sudoers.d/chronos
+  mount -o remount,ro /
 end script
 EOF
+sudo mount -o remount,ro /
 ok "Boot persistence installed"
-
-step "Installing sudocrosh shortcut in /tmp..."
-printf '#!/bin/bash\nssh localhost -l chronos -i /tmp/id_rsa -o StrictHostKeyChecking=no\n' > "$SHORTCUT"
-chmod +x "$SHORTCUT"
-ok "Shortcut installed at $SHORTCUT"
 
 echo ""
 echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════╗${RESET}"
 echo -e "${GREEN}${BOLD}║           Setup Complete! 🎉             ║${RESET}"
 echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════╝${RESET}"
 echo ""
-echo -e "  From now on, just type in ${CYAN}${BOLD}crosh shell${RESET}:"
+echo -e "  ${GREEN}sudo now works directly in crosh shell!${RESET}"
 echo ""
-echo -e "    ${MAGENTA}${BOLD}bash /tmp/sudocrosh${RESET}"
+echo -e "  Just open crosh and type:"
 echo ""
-echo -e "  That's it — ${GREEN}full sudo access${RESET}, no VT2 needed!"
+echo -e "    ${MAGENTA}${BOLD}shell${RESET}"
+echo -e "    ${MAGENTA}${BOLD}sudo <your command>${RESET}"
 echo ""
-warn "ChromeOS updates may wipe persistence. Re-run from VT2 if sudo stops working."
+warn "Requires rootfs verification to be OFF."
+warn "ChromeOS updates may re-enable rootfs verification. Re-run if sudo stops working."
 echo ""
