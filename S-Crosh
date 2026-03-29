@@ -13,7 +13,8 @@ RESET='\033[0m'
 SSH_DIR="/home/chronos/user/.ssh"
 KEY="$SSH_DIR/id_rsa"
 STARTUP="/etc/init/sudocrosh-ssh.conf"
-SHORTCUT="/usr/local/bin/sudocrosh"
+BIN_DIR="/home/chronos/user/bin"
+SHORTCUT="$BIN_DIR/sudocrosh"
 
 step() { echo -e "${CYAN}${BOLD}[→]${RESET} ${BOLD}$1${RESET}"; }
 ok()   { echo -e "${GREEN}${BOLD}[✓]${RESET} $1"; }
@@ -51,8 +52,8 @@ chmod 600 "$SSH_DIR/authorized_keys"
 ok "Key authorized"
 
 step "Generating host keys in /tmp..."
-[ ! -f /tmp/ssh_host_rsa_key ]   && sudo ssh-keygen -t rsa     -N "" -f /tmp/ssh_host_rsa_key   -q
-[ ! -f /tmp/ssh_host_ecdsa_key ] && sudo ssh-keygen -t ecdsa   -N "" -f /tmp/ssh_host_ecdsa_key -q
+[ ! -f /tmp/ssh_host_rsa_key ]     && sudo ssh-keygen -t rsa     -N "" -f /tmp/ssh_host_rsa_key     -q
+[ ! -f /tmp/ssh_host_ecdsa_key ]   && sudo ssh-keygen -t ecdsa   -N "" -f /tmp/ssh_host_ecdsa_key   -q
 [ ! -f /tmp/ssh_host_ed25519_key ] && sudo ssh-keygen -t ed25519 -N "" -f /tmp/ssh_host_ed25519_key -q
 ok "Host keys ready in /tmp/"
 
@@ -62,6 +63,7 @@ sudo /usr/sbin/sshd \
   -o HostKey=/tmp/ssh_host_ecdsa_key \
   -o HostKey=/tmp/ssh_host_ed25519_key \
   -o AuthorizedKeysFile=/home/chronos/user/.ssh/authorized_keys \
+  2>/dev/null \
   && ok "sshd started successfully" || err "Failed to start sshd"
 
 step "Installing boot persistence..."
@@ -69,8 +71,8 @@ sudo tee "$STARTUP" > /dev/null <<'EOF'
 description "sudocrosh SSH sudo enabler"
 start on started system-services
 script
-  [ ! -f /tmp/ssh_host_rsa_key ]    && ssh-keygen -t rsa     -N "" -f /tmp/ssh_host_rsa_key
-  [ ! -f /tmp/ssh_host_ecdsa_key ]  && ssh-keygen -t ecdsa   -N "" -f /tmp/ssh_host_ecdsa_key
+  [ ! -f /tmp/ssh_host_rsa_key ]     && ssh-keygen -t rsa     -N "" -f /tmp/ssh_host_rsa_key
+  [ ! -f /tmp/ssh_host_ecdsa_key ]   && ssh-keygen -t ecdsa   -N "" -f /tmp/ssh_host_ecdsa_key
   [ ! -f /tmp/ssh_host_ed25519_key ] && ssh-keygen -t ed25519 -N "" -f /tmp/ssh_host_ed25519_key
   /usr/sbin/sshd \
     -o HostKey=/tmp/ssh_host_rsa_key \
@@ -82,12 +84,17 @@ EOF
 ok "Boot persistence installed"
 
 step "Installing sudocrosh shortcut..."
-sudo tee "$SHORTCUT" > /dev/null <<'EOF'
+mkdir -p "$BIN_DIR"
+tee "$SHORTCUT" > /dev/null <<'EOF'
 #!/bin/bash
 ssh localhost -l chronos -i /home/chronos/user/.ssh/id_rsa -o StrictHostKeyChecking=no
 EOF
-sudo chmod +x "$SHORTCUT"
-ok "Shortcut installed"
+chmod +x "$SHORTCUT"
+
+if ! echo "$PATH" | grep -q "$BIN_DIR"; then
+  echo "export PATH=\$PATH:$BIN_DIR" >> /home/chronos/user/.bashrc
+fi
+ok "Shortcut installed at $SHORTCUT"
 
 echo ""
 echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════╗${RESET}"
