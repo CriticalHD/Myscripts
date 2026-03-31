@@ -2,74 +2,53 @@
 
 set -e
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-BOLD='\033[1m'
-RESET='\033[0m'
-
+CROSH_PATH="/usr/bin/crosh"
 SUDOERS_FILE="/etc/sudoers.d/chronos"
-STARTUP="/etc/init/sudocrosh.conf"
+STARTUP_CONF="/etc/init/sudocrosh.conf"
+SAFE_KEEPING="/usr/local/bin/s-crosh"
 
-step() { echo -e "${CYAN}${BOLD}[→]${RESET} ${BOLD}$1${RESET}"; }
-ok()   { echo -e "${GREEN}${BOLD}[✓]${RESET} $1"; }
-warn() { echo -e "${YELLOW}${BOLD}[!]${RESET} $1"; }
-err()  { echo -e "${RED}${BOLD}[✗]${RESET} $1"; exit 1; }
+echo "Checking Rootfs status..."
+if [[ ! $(mount | grep "on / type" | grep "rw") ]]; then
+    echo "Remounting Rootfs as RW..."
+    sudo mount -o remount,rw / || { echo "ERROR: Could not remount. Is rootfs verification off?"; exit 1; }
+fi
 
-echo -e "${MAGENTA}${BOLD}"
-echo "  ███████╗██╗   ██╗██████╗  ██████╗  ██████╗██████╗  ██████╗ ███████╗██╗  ██╗"
-echo "  ██╔════╝██║   ██║██╔══██╗██╔═══██╗██╔════╝██╔══██╗██╔═══██╗██╔════╝██║  ██║"
-echo "  ███████╗██║   ██║██║  ██║██║   ██║██║     ██████╔╝██║   ██║███████╗███████║"
-echo "  ╚════██║██║   ██║██║  ██║██║   ██║██║     ██╔══██╗██║   ██║╚════██║██╔══██║"
-echo "  ███████║╚██████╔╝██████╔╝╚██████╔╝╚██████╗██║  ██║╚██████╔╝███████║██║  ██║"
-echo "  ╚══════╝ ╚═════╝ ╚═════╝  ╚═════╝  ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝"
-echo -e "${RESET}"
-echo -e "${CYAN}${BOLD}        sudo enabler for ChromeOS crosh — Dev Mode${RESET}"
-echo -e "${YELLOW}        ─────────────────────────────────────────────────────${RESET}"
-echo ""
+# 1. Enable CROSH_DEBUG
+echo "Patching Crosh for Debug..."
+if grep -q "CROSH_DEBUG=false" "$CROSH_PATH"; then
+    sudo sed -i 's/CROSH_DEBUG=false/CROSH_DEBUG=true/' "$CROSH_PATH"
+    echo "[✓] Debug enabled."
+else
+    echo "[!] Debug already enabled or pattern not found."
+fi
 
-step "Remounting rootfs as read-write..."
-sudo mount -o remount,rw / || err "Failed to remount rootfs. Is rootfs verification off?"
-ok "Rootfs remounted as rw"
-
-step "Adding chronos sudo permissions..."
+# 2. Setup Sudo Permissions
+echo "Granting Sudo to chronos..."
 echo "chronos ALL=(ALL) NOPASSWD: ALL" | sudo tee "$SUDOERS_FILE" > /dev/null
 sudo chmod 0440 "$SUDOERS_FILE"
-ok "Sudo permissions granted"
+echo "[✓] Sudoers updated."
 
-step "Remounting rootfs as read-only..."
-sudo mount -o remount,ro /
-ok "Rootfs back to read-only"
-
-step "Installing boot persistence..."
-sudo mount -o remount,rw /
-sudo tee "$STARTUP" > /dev/null <<'EOF'
-description "sudocrosh — restore chronos sudo on boot"
+echo "Creating boot persistence job..."
+sudo tee "$STARTUP_CONF" > /dev/null <<EOF
+description "Restore S-Crosh patches on boot"
 start on started system-services
 script
   mount -o remount,rw /
-  echo "chronos ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/chronos
-  chmod 0440 /etc/sudoers.d/chronos
+  echo "chronos ALL=(ALL) NOPASSWD: ALL" > $SUDOERS_FILE
+  chmod 0440 $SUDOERS_FILE
+  sed -i 's/CROSH_DEBUG=false/CROSH_DEBUG=true/' $CROSH_PATH
   mount -o remount,ro /
 end script
 EOF
-sudo mount -o remount,ro /
-ok "Boot persistence installed"
+echo "[✓] Boot job created."
 
-echo ""
-echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════╗${RESET}"
-echo -e "${GREEN}${BOLD}║           Setup Complete! 🎉             ║${RESET}"
-echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════╝${RESET}"
-echo ""
-echo -e "  ${GREEN}sudo now works directly in crosh shell!${RESET}"
-echo ""
-echo -e "  Just open crosh and type:"
-echo ""
-echo -e "    ${MAGENTA}${BOLD}shell${RESET}"
-echo -e "    ${MAGENTA}${BOLD}sudo <your command>${RESET}"
-echo ""
-warn "Requires rootfs verification to be OFF."
-warn "ChromeOS updates may re-enable rootfs verification. Re-run if sudo stops working."
-echo ""
+echo "Saving script copy to /usr/local/bin/..."
+sudo cp "$0" "$SAFE_KEEPING" 2>/dev/null || true
+sudo chmod +x "$SAFE_KEEPING" 2>/dev/null || true
+echo "[✓] Script backed up to stateful partition."
+
+echo "-------------------------------------------"
+echo "DONE. If you update ChromeOS, just run:"
+echo "sudo sh /usr/local/bin/s-crosh"
+echo "to restore everything instantly."
+echo "-------------------------------------------"
