@@ -1,5 +1,11 @@
 #!/bin/bash
 
+PATHS=("/usr/bin/crosh" "/usr/bin/crosh.sh")
+TARGET_FILE=""
+SUDOERS_FILE="/etc/sudoers.d/chronos"
+STARTUP_CONF="/etc/init/sudocrosh.conf"
+SAFE_KEEPING="/usr/local/bin/s-crosh"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -8,13 +14,60 @@ MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
-CROSH_PATH="/usr/bin/crosh"
-SUDOERS_FILE="/etc/sudoers.d/chronos"
-STARTUP_CONF="/etc/init/sudocrosh.conf"
-SAFE_DIR="/usr/local/bin"
-SAFE_KEEPING="$SAFE_DIR/s-crosh"
+echo -e "${CYAN}[→]${RESET} Remounting rootfs RW..."
+sudo mount -o remount,rw / || { echo -e "${RED}Failed. Is rootfs verification off?${RESET}"; exit 1; }
 
-clear
+# 2. Find the correct file
+for p in "${PATHS[@]}"; do
+    if [ -f "$p" ]; then
+        TARGET_FILE="$p"
+        break
+    fi
+done
+
+if [ -z "$TARGET_FILE" ]; then
+    echo -e "${RED}[✗] Could not find crosh or crosh.sh in /usr/bin/!${RESET}"
+    exit 1
+else
+    echo -e "${GREEN}[✓] Found crosh at: $TARGET_FILE${RESET}"
+fi
+
+echo -e "${CYAN}[→]${RESET} Enabling CROSH_DEBUG=1..."
+# This will find any line starting with CROSH_DEBUG and force it to =1
+if grep -q "CROSH_DEBUG" "$TARGET_FILE"; then
+    sudo sed -i 's/^.*CROSH_DEBUG=.*/CROSH_DEBUG=1/' "$TARGET_FILE"
+    echo -e "${GREEN}[✓] Patch applied to $TARGET_FILE${RESET}"
+else
+    # If the variable isn't there at all, we'll append it to the top after the shebang
+    sudo sed -i '2iCROSH_DEBUG=1' "$TARGET_FILE"
+    echo -e "${YELLOW}[!] CROSH_DEBUG added to file header.${RESET}"
+fi
+
+echo -e "${CYAN}[→]${RESET} Updating sudoers..."
+echo "chronos ALL=(ALL) NOPASSWD: ALL" | sudo tee "$SUDOERS_FILE" > /dev/null
+sudo chmod 0440 "$SUDOERS_FILE"
+
+echo -e "${CYAN}[→]${RESET} Saving script to $SAFE_KEEPING..."
+sudo mkdir -p /usr/local/bin
+cat "$0" | sudo tee "$SAFE_KEEPING" > /dev/null
+sudo chmod +x "$SAFE_KEEPING"
+
+if [ -d "/etc/init" ]; then
+    echo -e "${CYAN}[→]${RESET} Setting up boot persistence..."
+    sudo tee "$STARTUP_CONF" > /dev/null <<EOF
+description "S-Crosh Persistence"
+start on started system-services
+script
+  mount -o remount,rw /
+  echo "chronos ALL=(ALL) NOPASSWD: ALL" > $SUDOERS_FILE
+  chmod 0440 $SUDOERS_FILE
+  [ -f $TARGET_FILE ] && sed -i 's/^.*CROSH_DEBUG=.*/CROSH_DEBUG=1/' $TARGET_FILE
+  mount -o remount,ro /
+end script
+EOF
+fi
+
+# Final Banner
 echo -e "${MAGENTA}${BOLD}"
 echo "  ███████╗ ██████╗██████╗  ██████╗ ███████╗██╗  ██╗"
 echo "  ██╔════╝██╔════╝██╔══██╗██╔═══██╗██╔════╝██║  ██║"
@@ -22,52 +75,6 @@ echo "  ███████╗██║     ██████╔╝██║ 
 echo "  ╚════██║██║     ██╔══██╗██║   ██║╚════██║██╔══██║"
 echo "  ███████║╚██████╗██║  ██║╚██████╔╝███████║██║  ██║"
 echo "  ╚══════╝ ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝"
-echo -e "${CYAN}             Sudo & Debug Enabler v2.0${RESET}"
+echo -e "${CYAN}             Sudo & Debug Enabler Complete!${RESET}"
 echo -e "${YELLOW}        ───────────────────────────────────────────${RESET}"
-
-echo -ne "${CYAN}[→]${RESET} Checking rootfs status... "
-if [[ ! $(mount | grep "on / type" | grep "rw") ]]; then
-    sudo mount -o remount,rw / &>/dev/null || { echo -e "${RED}FAILED${RESET}"; echo "Ensure rootfs verification is OFF."; exit 1; }
-    echo -e "${GREEN}Remounted RW${RESET}"
-else
-    echo -e "${GREEN}Already RW${RESET}"
-fi
-
-echo -ne "${CYAN}[→]${RESET} Patching $CROSH_PATH... "
-# This regex is more flexible to find the line even with different spacing
-if grep -q "CROSH_DEBUG=" "$CROSH_PATH"; then
-    sudo sed -i 's/CROSH_DEBUG=.*/CROSH_DEBUG=true/' "$CROSH_PATH"
-    echo -e "${GREEN}DONE${RESET}"
-else
-    echo -e "${RED}NOT FOUND${RESET}"
-    echo "    Check if /usr/bin/crosh exists on your build."
-fi
-
-echo -ne "${CYAN}[→]${RESET} Applying sudo permissions... "
-echo "chronos ALL=(ALL) NOPASSWD: ALL" | sudo tee "$SUDOERS_FILE" > /dev/null
-sudo chmod 0440 "$SUDOERS_FILE"
-echo -e "${GREEN}DONE${RESET}"
-
-echo -ne "${CYAN}[→]${RESET} Installing boot persistence... "
-sudo tee "$STARTUP_CONF" > /dev/null <<EOF
-description "S-Crosh Persistence"
-start on started system-services
-script
-  mount -o remount,rw /
-  echo "chronos ALL=(ALL) NOPASSWD: ALL" > $SUDOERS_FILE
-  chmod 0440 $SUDOERS_FILE
-  sed -i 's/CROSH_DEBUG=.*/CROSH_DEBUG=true/' $CROSH_PATH
-  mount -o remount,ro /
-end script
-EOF
-echo -e "${GREEN}DONE${RESET}"
-
-echo -ne "${CYAN}[→]${RESET} Saving backup to $SAFE_KEEPING... "
-sudo mkdir -p "$SAFE_DIR"
-cat "$0" | sudo tee "$SAFE_KEEPING" > /dev/null
-sudo chmod +x "$SAFE_KEEPING"
-echo -e "${GREEN}DONE${RESET}"
-
-echo -e "\n${BOLD}${GREEN}All steps complete!${RESET}"
-echo -e "To verify debug mode, open a new Crosh tab and type: ${CYAN}shell${RESET}"
-echo -e "If it asks for a password, your sudoers didn't stick."
+echo -e "${GREEN}Verification:${RESET} Type 'shell' in a new crosh tab."
