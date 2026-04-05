@@ -1,5 +1,5 @@
 #!/bin/bash
-# cshell v2.0 — Custom ChromeOS Shell
+# cshell v2.1 — Custom ChromeOS Shell
 # Run: curl -sSL <url> | sudo bash
 # Persists across powerwash via rootfs (requires patched rootfs)
 
@@ -13,7 +13,7 @@ UI_CONF="/etc/init/ui.conf"
 ROOTFS_SHELL="/usr/bin/cshell_rootfs"
 ROOTFS_CROSH_STUB="/usr/bin/crosh"
 INIT_SCRIPT="/etc/init/cshell-restore.conf"
-VERSION="2.0"
+VERSION="2.1"
 
 R='\033[0;31m'   # red
 G='\033[0;32m'   # green
@@ -272,26 +272,41 @@ do_install() {
     check_rootfs
     mkdir -p /usr/local/bin
 
-    # Download/copy cshell
-    echo -e "${D}    Obtaining cshell script...${N}"
+    # Install cshell — copy the currently-running script to its permanent path.
+    # We are already the script; no need to re-download anything.
+    echo -e "${D}    Installing cshell to ${SHELL_PATH}...${N}"
     local got=0
-    if curl -sSfL "$SCRIPT_URL" -o "$SHELL_PATH" 2>/dev/null && [[ -s "$SHELL_PATH" ]]; then
-        chmod +x "$SHELL_PATH"
-        echo -e "${G}    Downloaded to ${SHELL_PATH}${N}"
-        got=1
-    fi
+
+    # Method 1: bash holds the script open on fd 255 when run as  bash <(curl ...)
+    # or pipes it through /dev/fd/63 etc. /proc/self/fd/255 is the most reliable.
+    for fd_path in "/proc/$$/fd/255" "/proc/self/fd/255" "/proc/$$/fd/0"; do
+        if [[ -r "$fd_path" ]]; then
+            cp "$fd_path" "$SHELL_PATH" 2>/dev/null && [[ -s "$SHELL_PATH" ]] && got=1 && break
+        fi
+    done
+
+    # Method 2: BASH_SOURCE / $0 is a real file (e.g. user ran  bash cshell.sh)
     if [[ $got -eq 0 ]]; then
         local src="${BASH_SOURCE[0]:-$0}"
-        if [[ -f "$src" && "$src" != "/dev/stdin" && "$src" != "bash" ]]; then
-            cp "$src" "$SHELL_PATH" && chmod +x "$SHELL_PATH"
-            echo -e "${G}    Copied from ${src}${N}"
-            got=1
+        if [[ -f "$src" && "$src" != "/dev/stdin" && "$src" != "bash" && "$src" != "/bin/bash" ]]; then
+            cp "$src" "$SHELL_PATH" 2>/dev/null && [[ -s "$SHELL_PATH" ]] && got=1
         fi
     fi
+
+    # Method 3: last resort — download from GitHub
+    if [[ $got -eq 0 && -n "$SCRIPT_URL" ]]; then
+        echo -e "${D}    Trying download from GitHub...${N}"
+        curl -sSfL "$SCRIPT_URL" -o "$SHELL_PATH" 2>/dev/null && [[ -s "$SHELL_PATH" ]] && got=1
+    fi
+
     if [[ $got -eq 0 ]]; then
-        echo -e "${R}[!] Could not obtain script. Set SCRIPT_URL at top of file.${N}"
+        echo -e "${R}[!] Could not write cshell to ${SHELL_PATH}.${N}"
+        echo -e "${R}    Try running as:  bash <(curl -sSL <url>)${N}"
         exit 1
     fi
+
+    chmod +x "$SHELL_PATH"
+    echo -e "${G}    Installed to ${SHELL_PATH}${N}"
 
     NEEDS_REBOOT=0
     OVERRIDE_FAILED=0
