@@ -1,11 +1,12 @@
 #!/bin/bash
 # cshell - Custom ChromeOS Shell
-# curl -sSL <url> | sudo bash
+# Run: curl -sSL <url> | sudo bash
 
+SCRIPT_URL="https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/cshell"
 SHELL_PATH="/usr/local/bin/cshell"
 CROSH_PATH="/usr/bin/crosh"
 CROSH_BACKUP="/usr/bin/crosh.real"
-VERSION="1.1"
+VERSION="1.2"
 
 RED='\033[0;31m'
 GRN='\033[0;32m'
@@ -16,7 +17,6 @@ DIM='\033[2m'
 RST='\033[0m'
 REV='\033[7m'
 
-# ─────────────────────────────────────────
 remount_rw() {
     mount -o remount,rw / 2>/dev/null
     mount -o remount,rw /usr 2>/dev/null
@@ -36,22 +36,16 @@ banner() {
     echo ""
 }
 
-pause() {
+pause_key() {
     echo -e "\n  ${DIM}Press any key to go back...${RST}"
     read -rsn1
 }
 
-# ─────────────────────────────────────────
-#  ARROW KEY MENU
-#  Usage: draw_menu "Title" item1 item2 ...
-#  Result in $MENU_RESULT (0-indexed), -1 = quit
-# ─────────────────────────────────────────
 draw_menu() {
     local title="$1"; shift
     local items=("$@")
     local selected=0
     local count=${#items[@]}
-
     while true; do
         banner
         echo -e "  ${WHT}${title}${RST}\n"
@@ -63,7 +57,6 @@ draw_menu() {
             fi
         done
         echo -e "\n  ${DIM}↑ ↓  navigate    Enter  select    Q  quit${RST}"
-
         IFS= read -rsn1 key
         if [[ "$key" == $'\x1b' ]]; then
             read -rsn2 -t 0.1 seq
@@ -80,93 +73,132 @@ draw_menu() {
 }
 
 # ─────────────────────────────────────────
-#  INSTALLER
+#  ROOTFS CHECK — called before install
+# ─────────────────────────────────────────
+check_rootfs() {
+    remount_rw
+    if touch /usr/bin/.rw_test 2>/dev/null; then
+        rm -f /usr/bin/.rw_test
+        return 0
+    fi
+
+    banner
+    echo -e "  ${YLW}⚠  Rootfs Verification is ENABLED${RST}\n"
+    echo -e "  cshell requires a writable rootfs to install."
+    echo -e "  Rootfs verification must be disabled first.\n"
+    echo -e "  ${WHT}Disable rootfs verification now?${RST}"
+    echo -e "  ${DIM}(runs make_dev_ssd.sh --remove_rootfs_verification)${RST}\n"
+    echo -ne "  ${CYN}[y/N]:${RST} "
+    read -r confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        echo ""
+        echo -e "${YLW}[*] Disabling rootfs verification...${RST}"
+        sudo /usr/share/vboot/bin/make_dev_ssd.sh --remove_rootfs_verification 2>&1 | \
+            while IFS= read -r l; do echo "  $l"; done
+        echo ""
+        echo -e "${GRN}[+] Done. Reboot required for changes to take effect.${RST}"
+        echo -e "${YLW}[*] After reboot, re-run the install command.${RST}\n"
+        echo -ne "  Reboot now? [y/N]: "
+        read -r rb
+        [[ "$rb" =~ ^[Yy]$ ]] && reboot
+        exit 0
+    else
+        echo -e "\n  ${RED}[!] Cannot install without writable rootfs. Exiting.${RST}\n"
+        exit 1
+    fi
+}
+
+# ─────────────────────────────────────────
+#  INSTALL
 # ─────────────────────────────────────────
 do_install() {
     banner
     echo -e "${YLW}[*] Installing cshell...${RST}\n"
+    [[ "$(id -u)" -ne 0 ]] && echo -e "${RED}[!] Run as root.${RST}" && exit 1
 
-    [[ "$(id -u)" -ne 0 ]] && echo -e "${RED}[!] Run as root: curl ... | sudo bash${RST}" && exit 1
-
-    echo -e "${DIM}    Remounting rootfs read-write...${RST}"
-    remount_rw
-
-    if ! touch /usr/bin/.rw_test 2>/dev/null; then
-        echo -e "${RED}[!] Rootfs still read-only. Run K-Patch first.${RST}"
-        exit 1
-    fi
-    rm -f /usr/bin/.rw_test
+    echo -e "${DIM}    Checking rootfs...${RST}"
+    check_rootfs
 
     mkdir -p /usr/local/bin
 
-    # Write this script to permanent path
-    # When run as curl|bash, BASH_SOURCE[0] is the temp script
-    echo -e "${DIM}    Writing shell to ${SHELL_PATH}...${RST}"
-    if [[ -f "${BASH_SOURCE[0]}" ]]; then
+    echo -e "${DIM}    Downloading cshell to ${SHELL_PATH}...${RST}"
+    if curl -sSL "$SCRIPT_URL" -o "$SHELL_PATH" 2>/dev/null && [[ -s "$SHELL_PATH" ]]; then
+        chmod +x "$SHELL_PATH"
+        echo -e "${GRN}    Downloaded to ${SHELL_PATH}${RST}"
+    elif [[ -f "${BASH_SOURCE[0]}" && "${BASH_SOURCE[0]}" != "/dev/stdin" ]]; then
         cp "${BASH_SOURCE[0]}" "$SHELL_PATH"
+        chmod +x "$SHELL_PATH"
+        echo -e "${GRN}    Copied from source to ${SHELL_PATH}${RST}"
     else
-        # Fallback: rewrite via heredoc won't work for large scripts
-        # so we instruct the user to run differently
-        echo -e "${RED}[!] Could not copy script. Please run as:${RST}"
-        echo -e "    ${WHT}bash <(curl -sSL <your-url>)${RST}  instead of  ${WHT}curl ... | bash${RST}"
+        echo -e "${RED}[!] Could not obtain script. Check network and try again.${RST}"
         exit 1
     fi
 
-    chmod +x "$SHELL_PATH"
+    [[ ! -x "$SHELL_PATH" ]] && echo -e "${RED}[!] Install failed.${RST}" && exit 1
 
-    if [[ ! -x "$SHELL_PATH" ]]; then
-        echo -e "${RED}[!] Failed to make ${SHELL_PATH} executable.${RST}"
-        exit 1
-    fi
-    echo -e "${GRN}    Installed to ${SHELL_PATH}${RST}"
-
-    # Backup and replace crosh
     if [[ ! -f "$CROSH_BACKUP" ]]; then
         echo -e "${DIM}    Backing up original crosh...${RST}"
-        cp "$CROSH_PATH" "$CROSH_BACKUP" \
-            && echo -e "${GRN}    Backed up to ${CROSH_BACKUP}${RST}" \
-            || echo -e "${YLW}    Could not back up crosh (may not exist yet)${RST}"
+        cp "$CROSH_PATH" "$CROSH_BACKUP" && echo -e "${GRN}    Backed up to ${CROSH_BACKUP}${RST}"
     else
         echo -e "${DIM}    Crosh backup already exists.${RST}"
     fi
 
-    echo -e "${DIM}    Replacing crosh with cshell launcher...${RST}"
+    echo -e "${DIM}    Writing crosh stub...${RST}"
     printf '#!/bin/bash\nexec sudo /usr/local/bin/cshell\n' > "$CROSH_PATH"
     chmod +x "$CROSH_PATH"
     echo -e "${GRN}    Crosh stub installed.${RST}"
 
     echo ""
-    echo -e "${GRN}[+] Done! Press Ctrl+Alt+T to open crosh and launch cshell.${RST}\n"
-}
-
-# ─────────────────────────────────────────
-#  UNINSTALLER
-# ─────────────────────────────────────────
-do_uninstall() {
-    banner
-    echo -e "${YLW}[*] Uninstalling cshell...${RST}\n"
-
-    [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" --uninstall
-
-    remount_rw
-
-    if [[ -f "$CROSH_BACKUP" ]]; then
-        cp "$CROSH_BACKUP" "$CROSH_PATH"
-        chmod +x "$CROSH_PATH"
-        rm -f "$CROSH_BACKUP"
-        echo -e "${GRN}[+] Original crosh restored.${RST}"
-    else
-        echo -e "${YLW}[!] No crosh backup found.${RST}"
-    fi
-
-    rm -f "$SHELL_PATH"
-    echo -e "${GRN}[+] Removed ${SHELL_PATH}${RST}"
-    echo -e "${GRN}[+] cshell uninstalled successfully.${RST}\n"
+    echo -e "${GRN}[+] cshell installed! Open crosh (Ctrl+Alt+T) to launch.${RST}\n"
+    echo -ne "  ${DIM}Press any key to exit...${RST}"
+    read -rsn1
     exit 0
 }
 
 # ─────────────────────────────────────────
-#  FEATURES
+#  DELETE CSHELL
+# ─────────────────────────────────────────
+do_delete() {
+    banner
+    echo -e "${YLW}[*] Deleting cshell...${RST}\n"
+    [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" --delete
+    remount_rw
+    if rm -f "$SHELL_PATH" 2>/dev/null; then
+        echo -e "${GRN}[+] Removed ${SHELL_PATH}${RST}"
+    else
+        echo -e "${YLW}[!] ${SHELL_PATH} not found or already removed.${RST}"
+    fi
+    echo -e "${DIM}    Crosh stub may still be active. Use 'Restore crosh' if needed.${RST}\n"
+    echo -ne "  ${DIM}Press any key to exit...${RST}"
+    read -rsn1
+    exit 0
+}
+
+# ─────────────────────────────────────────
+#  RESTORE CROSH
+# ─────────────────────────────────────────
+do_restore_crosh() {
+    banner
+    echo -e "${YLW}[*] Restoring crosh to factory...${RST}\n"
+    [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" --restore
+    remount_rw
+    if [[ -f "$CROSH_BACKUP" ]]; then
+        cp "$CROSH_BACKUP" "$CROSH_PATH"
+        chmod +x "$CROSH_PATH"
+        rm -f "$CROSH_BACKUP"
+        echo -e "${GRN}[+] Original crosh restored successfully.${RST}"
+    else
+        echo -e "${RED}[!] No backup found at ${CROSH_BACKUP}.${RST}"
+        echo -e "    If crosh is broken, use Recovery Mode (Esc+Refresh+Power)."
+    fi
+    echo ""
+    echo -ne "  ${DIM}Press any key to exit...${RST}"
+    read -rsn1
+    exit 0
+}
+
+# ─────────────────────────────────────────
+#  SHELL PAGES (launched from crosh)
 # ─────────────────────────────────────────
 page_sysinfo() {
     banner
@@ -183,8 +215,8 @@ page_sysinfo() {
     echo -e "  ${CYN}CPU:${RST}      ${cpu:-unknown}"
     echo -e "  ${CYN}RAM:${RST}      ${mem_free} free / ${mem_total} total"
     echo -e "  ${CYN}Uptime:${RST}   $(uptime -p 2>/dev/null || uptime)"
-    echo -e "  ${CYN}Running as:${RST} $(whoami) (uid=$(id -u))"
-    pause
+    echo -e "  ${CYN}User:${RST}     $(whoami) (uid=$(id -u))"
+    pause_key
 }
 
 page_battery() {
@@ -196,7 +228,7 @@ page_battery() {
     done
     if [[ -z "$bat" ]]; then
         command -v ectool &>/dev/null && ectool batterystatus 2>/dev/null || echo "  No battery info found."
-        pause; return
+        pause_key; return
     fi
     local status=$(cat "$bat/status" 2>/dev/null || echo "unknown")
     local cap=$(cat "$bat/capacity" 2>/dev/null || echo "?")
@@ -212,7 +244,7 @@ page_battery() {
         echo -e "  ${CYN}Design:${RST}  $(awk "BEGIN{printf \"%.2f Wh\",$edesign/1000000}")"
     fi
     [[ -n "$voltage" ]] && echo -e "  ${CYN}Voltage:${RST} $(awk "BEGIN{printf \"%.2f V\",$voltage/1000000}")"
-    pause
+    pause_key
 }
 
 page_devmode() {
@@ -225,37 +257,37 @@ page_devmode() {
     else
         echo "  crossystem not available."
     fi
-    pause
+    pause_key
 }
 
 page_net() {
     banner
     echo -e "  ${WHT}── Network ──────────────────────────────────────────${RST}\n"
-    ip -br addr show 2>/dev/null | while read l; do echo "  $l"; done
+    ip -br addr show 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
     echo -e "\n  ${DIM}Default route:${RST}"
-    ip route show default 2>/dev/null | while read l; do echo "  $l"; done
-    pause
+    ip route show default 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+    pause_key
 }
 
 page_storage() {
     banner
     echo -e "  ${WHT}── Storage ──────────────────────────────────────────${RST}\n"
-    df -h 2>/dev/null | grep -v "^tmpfs\|^devtmpfs" | while read l; do echo "  $l"; done
-    pause
+    df -h 2>/dev/null | grep -v "^tmpfs\|^devtmpfs" | while IFS= read -r l; do echo "  $l"; done
+    pause_key
 }
 
 page_procs() {
     banner
     echo -e "  ${WHT}── Top Processes ────────────────────────────────────${RST}\n"
-    ps aux --sort=-%cpu 2>/dev/null | head -16 | while read l; do echo "  $l"; done
-    pause
+    ps aux --sort=-%cpu 2>/dev/null | head -16 | while IFS= read -r l; do echo "  $l"; done
+    pause_key
 }
 
 page_extensions() {
     banner
     echo -e "  ${WHT}── Chrome Extensions ────────────────────────────────${RST}\n"
     local dir="/home/chronos/user/Extensions"
-    if [[ ! -d "$dir" ]]; then echo "  Not found: $dir"; pause; return; fi
+    if [[ ! -d "$dir" ]]; then echo "  Not found: $dir"; pause_key; return; fi
     local n=0
     for id_dir in "$dir"/*/; do
         local id=$(basename "$id_dir")
@@ -267,42 +299,34 @@ page_extensions() {
         ((n++))
     done
     echo -e "\n  ${DIM}${n} extension(s) found${RST}"
-    pause
+    pause_key
 }
 
 menu_rootfs() {
-    draw_menu "Rootfs Mount" \
-        "Remount read-write" \
-        "Remount read-only" \
-        "← Back"
+    draw_menu "Rootfs Mount" "Remount read-write" "Remount read-only" "← Back"
     case $MENU_RESULT in
-        0) banner; remount_rw; echo -e "  ${GRN}[+] Remounted read-write.${RST}"; pause ;;
-        1) banner; mount -o remount,ro / 2>/dev/null; echo -e "  ${GRN}[+] Remounted read-only.${RST}"; pause ;;
+        0) banner; remount_rw; echo -e "  ${GRN}[+] Remounted read-write.${RST}"; pause_key ;;
+        1) banner; mount -o remount,ro / 2>/dev/null; echo -e "  ${GRN}[+] Remounted read-only.${RST}"; pause_key ;;
     esac
 }
 
 menu_updates() {
-    draw_menu "Update Engine" \
-        "Block auto-updates (stop update-engine)" \
-        "Allow auto-updates (start update-engine)" \
-        "← Back"
+    draw_menu "Update Engine" "Block auto-updates" "Allow auto-updates" "← Back"
     case $MENU_RESULT in
         0) banner
-           systemctl stop update-engine 2>/dev/null
-           stop update-engine 2>/dev/null
+           systemctl stop update-engine 2>/dev/null; stop update-engine 2>/dev/null
            pkill -f update_engine 2>/dev/null
-           echo -e "  ${GRN}[+] Updates blocked until next reboot.${RST}"; pause ;;
+           echo -e "  ${GRN}[+] Updates blocked until next reboot.${RST}"; pause_key ;;
         1) banner
-           systemctl start update-engine 2>/dev/null
-           start update-engine 2>/dev/null
-           echo -e "  ${GRN}[+] Update engine re-enabled.${RST}"; pause ;;
+           systemctl start update-engine 2>/dev/null; start update-engine 2>/dev/null
+           echo -e "  ${GRN}[+] Update engine re-enabled.${RST}"; pause_key ;;
     esac
 }
 
 page_wipe_logs() {
     banner
     echo -e "  ${WHT}── Wipe Logs ────────────────────────────────────────${RST}\n"
-    echo -ne "  ${YLW}[!] This will clear system logs. Continue? [y/N]:${RST} "
+    echo -ne "  ${YLW}[!] Clear system logs? [y/N]:${RST} "
     read -r confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         for f in /var/log/*.log /var/log/messages /var/log/syslog; do
@@ -313,7 +337,7 @@ page_wipe_logs() {
     else
         echo -e "  ${DIM}Cancelled.${RST}"
     fi
-    pause
+    pause_key
 }
 
 menu_scripts() {
@@ -325,11 +349,11 @@ menu_scripts() {
             "← Back"
         case $MENU_RESULT in
             0) banner; echo -e "${YLW}[*] Running K-Patch...${RST}\n"
-               bash <(curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/K-Patch); pause ;;
+               bash <(curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/K-Patch); pause_key ;;
             1) banner; echo -e "${YLW}[*] Running SAUB...${RST}\n"
-               bash <(curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/SAUB); pause ;;
+               bash <(curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/SAUB); pause_key ;;
             2) banner; echo -e "${YLW}[*] Running R-Patch...${RST}\n"
-               bash <(curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/R-Patch); pause ;;
+               bash <(curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/R-Patch); pause_key ;;
             *) return ;;
         esac
     done
@@ -342,17 +366,7 @@ page_bash() {
     echo -e "\n  ${CYN}[*] Back in cshell.${RST}"; sleep 1
 }
 
-menu_delete() {
-    draw_menu "Delete cshell?" \
-        "Yes — uninstall and restore crosh" \
-        "No  — go back"
-    [[ $MENU_RESULT -eq 0 ]] && do_uninstall
-}
-
-# ─────────────────────────────────────────
-#  MAIN MENU
-# ─────────────────────────────────────────
-main_menu() {
+shell_main_menu() {
     while true; do
         draw_menu "Main Menu" \
             "System Info" \
@@ -367,7 +381,6 @@ main_menu() {
             "Wipe Logs" \
             "Scripts  ›  K-Patch / SAUB / R-Patch" \
             "Root Bash Shell" \
-            "Delete cshell" \
             "Exit"
         case $MENU_RESULT in
             0)  page_sysinfo ;;
@@ -382,8 +395,7 @@ main_menu() {
             9)  page_wipe_logs ;;
             10) menu_scripts ;;
             11) page_bash ;;
-            12) menu_delete ;;
-            13|-1) echo -e "${DIM}Goodbye.${RST}"; exit 0 ;;
+            12|-1) echo -e "${DIM}Goodbye.${RST}"; exit 0 ;;
         esac
     done
 }
@@ -391,16 +403,31 @@ main_menu() {
 # ─────────────────────────────────────────
 #  ENTRY POINT
 # ─────────────────────────────────────────
-[[ "$1" == "--uninstall" ]] && do_uninstall
+[[ "$1" == "--delete"  ]] && { [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" --delete; do_delete; }
+[[ "$1" == "--restore" ]] && { [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" --restore; do_restore_crosh; }
 
-# Escalate to root if needed
+# Escalate to root
 [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" "$@"
 
-# If not yet at permanent path → run installer
-if [[ "$(realpath "${BASH_SOURCE[0]}" 2>/dev/null)" != "$SHELL_PATH" && \
-      "$(realpath "$0" 2>/dev/null)" != "$SHELL_PATH" ]]; then
-    do_install
+# If launched as the installed shell (from crosh stub), go straight to shell menu
+if [[ "$(realpath "$0" 2>/dev/null)" == "$SHELL_PATH" ]]; then
+    shell_main_menu
     exit 0
 fi
 
-main_menu
+# Otherwise: setup menu (curl | bash scenario)
+while true; do
+    draw_menu "What would you like to do?" \
+        "Install cshell" \
+        "Delete cshell" \
+        "Restore crosh to factory" \
+        "Exit"
+    case $MENU_RESULT in
+        0) do_install ;;
+        1) draw_menu "Delete cshell — are you sure?" "Yes — delete cshell" "No  — go back"
+           [[ $MENU_RESULT -eq 0 ]] && do_delete ;;
+        2) draw_menu "Restore crosh — are you sure?" "Yes — restore original crosh" "No  — go back"
+           [[ $MENU_RESULT -eq 0 ]] && do_restore_crosh ;;
+        3|-1) echo -e "${DIM}Goodbye.${RST}"; exit 0 ;;
+    esac
+done
