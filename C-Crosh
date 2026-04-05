@@ -1,16 +1,15 @@
 #!/bin/bash
-# cshell - Custom ChromeOS Shell v1.3
-# Fixes crosh root access via SSH key bypass (NO_NEW_PRIVS workaround)
+# cshell - Custom ChromeOS Shell v1.4
+# Fixes sudo/NO_NEW_PRIVS via minioverride LD_PRELOAD (R117+ fix)
 # Run: curl -sSL <your-raw-url> | sudo bash
-#  OR: sudo bash <(curl -sSL <your-raw-url>)
 
 SCRIPT_URL="https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/cshell"
 SHELL_PATH="/usr/local/bin/cshell"
 CROSH_PATH="/usr/bin/crosh"
 CROSH_BACKUP="/usr/bin/crosh.real"
-SSH_KEY_PATH="/usr/local/cshell_key"
-AUTH_KEYS="/home/chronos/.ssh/authorized_keys"
-VERSION="1.3"
+OVERRIDE_SO="/usr/local/bin/minioverride.so"
+UI_CONF="/etc/init/ui.conf"
+VERSION="1.4"
 
 RED='\033[0;31m'
 GRN='\033[0;32m'
@@ -21,7 +20,6 @@ DIM='\033[2m'
 RST='\033[0m'
 REV='\033[7m'
 
-# ─────────────────────────────────────────
 remount_rw() {
     mount -o remount,rw / 2>/dev/null
     mount -o remount,rw /usr 2>/dev/null
@@ -47,16 +45,13 @@ pause_key() {
 }
 
 # ─────────────────────────────────────────
-#  MENU — works both piped AND interactive
-#  If stdin is not a tty (piped), falls back
-#  to numbered text selection
+#  MENU — arrow keys if tty, numbered if piped
 # ─────────────────────────────────────────
 draw_menu() {
     local title="$1"; shift
     local items=("$@")
     local count=${#items[@]}
 
-    # Arrow-key menu only works when stdin is a terminal
     if [[ -t 0 ]]; then
         local selected=0
         while true; do
@@ -84,8 +79,6 @@ draw_menu() {
             fi
         done
     else
-        # Fallback: numbered text menu for piped mode
-        # Re-open /dev/tty so we can read from the terminal even when piped
         exec 3</dev/tty
         banner
         echo -e "  ${WHT}${title}${RST}\n"
@@ -110,75 +103,97 @@ draw_menu() {
 check_rootfs() {
     remount_rw
     if touch /usr/bin/.rw_test 2>/dev/null; then
-        rm -f /usr/bin/.rw_test
-        return 0
+        rm -f /usr/bin/.rw_test; return 0
     fi
     banner
     echo -e "  ${YLW}⚠  Rootfs Verification is ENABLED${RST}\n"
     echo -e "  cshell needs a writable rootfs to install."
     echo -e "  ${WHT}Disable rootfs verification now?${RST}"
-    echo -e "  ${DIM}(runs make_dev_ssd.sh --remove_rootfs_verification then reboots)${RST}\n"
-
-    local tty_fd
-    if [[ ! -t 0 ]]; then exec 3</dev/tty; tty_fd=3; else tty_fd=0; fi
+    echo -e "  ${DIM}(runs make_dev_ssd.sh --remove_rootfs_verification)${RST}\n"
+    local fd; [[ ! -t 0 ]] && exec 3</dev/tty && fd=3 || fd=0
     echo -ne "  ${CYN}[y/N]:${RST} "
-    read -r confirm <&$tty_fd
-    [[ $tty_fd -eq 3 ]] && exec 3<&-
-
+    read -r confirm <&$fd
+    [[ $fd -eq 3 ]] && exec 3<&-
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         echo -e "\n${YLW}[*] Disabling rootfs verification...${RST}"
         /usr/share/vboot/bin/make_dev_ssd.sh --remove_rootfs_verification 2>&1 | \
             while IFS= read -r l; do echo "  $l"; done
-        echo -e "\n${GRN}[+] Done. Reboot required.${RST}"
-        echo -e "${YLW}[*] After reboot, re-run the install command.${RST}\n"
+        echo -e "\n${GRN}[+] Done. Reboot required — then re-run install.${RST}\n"
         echo -ne "  Reboot now? [y/N]: "
-        read -r rb
-        [[ "$rb" =~ ^[Yy]$ ]] && reboot
+        read -r rb; [[ "$rb" =~ ^[Yy]$ ]] && reboot
         exit 0
     else
-        echo -e "\n  ${RED}[!] Cannot install without writable rootfs. Exiting.${RST}\n"
-        exit 1
+        echo -e "\n  ${RED}[!] Cannot install without writable rootfs. Exiting.${RST}\n"; exit 1
     fi
 }
 
 # ─────────────────────────────────────────
-#  SSH KEY SETUP
-#  This is the core fix for NO_NEW_PRIVS.
-#  We generate a key for chronos and authorize
-#  it, so the crosh stub can SSH as chronos
-#  then sudo without hitting the privs block.
+#  MINIOVERRIDE — fixes sudo NO_NEW_PRIVS
+#  Compiles a tiny .so that stubs out the
+#  minijail functions that set no_new_privs,
+#  then preloads it into the UI process so
+#  all child processes (including crosh)
+#  inherit a clean privilege environment.
 # ─────────────────────────────────────────
-setup_ssh_key() {
-    echo -e "${DIM}    Setting up SSH key for crosh root access...${RST}"
+install_minioverride() {
+    echo -e "${DIM}    Installing minioverride (sudo fix for R117+)...${RST}"
 
-    # Start sshd if not running
-    if ! pgrep -x sshd >/dev/null 2>&1; then
-        /usr/sbin/sshd 2>/dev/null || true
-        sleep 1
+    # Write minioverride.c
+    cat > /tmp/minioverride.c << 'EOF'
+int minijail_no_new_privs(){ return 0; }
+int minijail_add_fs_restriction_rx(){ return 0; }
+int minijail_add_fs_restriction_advanced_rw(){ return 0; }
+int minijail_set_enable_profile_fs_restrictions(){ return 0; }
+int minijail_enable_default_fs_restrictions(){ return 0; }
+EOF
+
+    # Try to compile (needs gcc — available in crostini or dev tools)
+    if command -v gcc &>/dev/null; then
+        gcc /tmp/minioverride.c -o "$OVERRIDE_SO" -shared -fPIC 2>/dev/null
+    elif command -v cc &>/dev/null; then
+        cc /tmp/minioverride.c -o "$OVERRIDE_SO" -shared -fPIC 2>/dev/null
+    else
+        echo -e "${YLW}    gcc not found — trying to download prebuilt minioverride.so...${RST}"
+        # Try to download a prebuilt binary (x86_64) — user should host their own
+        curl -sSL "https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/minioverride.so" \
+            -o "$OVERRIDE_SO" 2>/dev/null
     fi
 
-    # Generate dedicated key for cshell
-    mkdir -p "$(dirname "$SSH_KEY_PATH")"
-    rm -f "$SSH_KEY_PATH" "${SSH_KEY_PATH}.pub"
-    ssh-keygen -t ed25519 -f "$SSH_KEY_PATH" -N "" -q
-
-    # Authorize the key for chronos user
-    local auth_dir="/home/chronos/.ssh"
-    mkdir -p "$auth_dir"
-    chown chronos:chronos "$auth_dir"
-    chmod 700 "$auth_dir"
-
-    # Add key if not already there
-    local pubkey=$(cat "${SSH_KEY_PATH}.pub")
-    touch "$AUTH_KEYS"
-    chown chronos:chronos "$AUTH_KEYS"
-    chmod 600 "$AUTH_KEYS"
-    if ! grep -qF "$pubkey" "$AUTH_KEYS" 2>/dev/null; then
-        echo "$pubkey" >> "$AUTH_KEYS"
+    if [[ ! -f "$OVERRIDE_SO" ]]; then
+        echo -e "${RED}    [!] Could not build or download minioverride.so${RST}"
+        echo -e "${YLW}    Sudo will still show a warning in crosh but may still work.${RST}"
+        echo -e "${YLW}    To fix: install gcc in crostini, compile minioverride.c, copy to ${OVERRIDE_SO}${RST}"
+        return 1
     fi
 
-    chmod 600 "$SSH_KEY_PATH"
-    echo -e "${GRN}    SSH key installed.${RST}"
+    chmod +x "$OVERRIDE_SO"
+
+    # Patch ui.conf to preload the override into the UI process
+    # This makes sudo work from crosh without NO_NEW_PRIVS blocking it
+    if [[ -f "$UI_CONF" ]]; then
+        if ! grep -q "minioverride" "$UI_CONF"; then
+            sed -i '1s/^/env LD_PRELOAD=\/usr\/local\/bin\/minioverride.so\n/' "$UI_CONF"
+            echo -e "${GRN}    Patched ${UI_CONF} with LD_PRELOAD${RST}"
+            echo -e "${YLW}    NOTE: Reboot required for sudo fix to take effect.${RST}"
+            NEEDS_REBOOT=1
+        else
+            echo -e "${DIM}    ui.conf already patched.${RST}"
+        fi
+    else
+        echo -e "${YLW}    ${UI_CONF} not found — skipping ui.conf patch.${RST}"
+    fi
+
+    rm -f /tmp/minioverride.c
+    echo -e "${GRN}    minioverride.so installed.${RST}"
+}
+
+remove_minioverride() {
+    if [[ -f "$UI_CONF" ]] && grep -q "minioverride" "$UI_CONF"; then
+        sed -i '/minioverride/d' "$UI_CONF"
+        echo -e "${GRN}[+] Removed minioverride patch from ${UI_CONF}${RST}"
+    fi
+    rm -f "$OVERRIDE_SO"
+    echo -e "${GRN}[+] Removed ${OVERRIDE_SO}${RST}"
 }
 
 # ─────────────────────────────────────────
@@ -191,27 +206,23 @@ do_install() {
 
     echo -e "${DIM}    Checking rootfs...${RST}"
     check_rootfs
-
     mkdir -p /usr/local/bin
 
-    # Download cshell to permanent path
     echo -e "${DIM}    Downloading cshell to ${SHELL_PATH}...${RST}"
     if curl -sSL "$SCRIPT_URL" -o "$SHELL_PATH" 2>/dev/null && [[ -s "$SHELL_PATH" ]]; then
         chmod +x "$SHELL_PATH"
         echo -e "${GRN}    Downloaded to ${SHELL_PATH}${RST}"
     elif [[ -f "${BASH_SOURCE[0]}" && "${BASH_SOURCE[0]}" != "/dev/stdin" ]]; then
-        cp "${BASH_SOURCE[0]}" "$SHELL_PATH"
-        chmod +x "$SHELL_PATH"
+        cp "${BASH_SOURCE[0]}" "$SHELL_PATH" && chmod +x "$SHELL_PATH"
         echo -e "${GRN}    Copied from source to ${SHELL_PATH}${RST}"
     else
-        echo -e "${RED}[!] Could not obtain script. Check network.${RST}"
-        exit 1
+        echo -e "${RED}[!] Could not obtain script. Check network.${RST}"; exit 1
     fi
-
     [[ ! -x "$SHELL_PATH" ]] && echo -e "${RED}[!] Install failed.${RST}" && exit 1
 
-    # Setup SSH key (the NO_NEW_PRIVS workaround)
-    setup_ssh_key
+    # Install minioverride sudo fix
+    NEEDS_REBOOT=0
+    install_minioverride
 
     # Backup crosh
     if [[ ! -f "$CROSH_BACKUP" ]]; then
@@ -221,52 +232,43 @@ do_install() {
         echo -e "${DIM}    Crosh backup already exists.${RST}"
     fi
 
-    # Write crosh stub — uses SSH to bypass NO_NEW_PRIVS
-    echo -e "${DIM}    Writing crosh stub (SSH-based root bypass)...${RST}"
-    cat > "$CROSH_PATH" << 'STUB'
-#!/bin/bash
-# cshell crosh stub - bypasses NO_NEW_PRIVS via SSH
-# Start sshd if needed
-pgrep -x sshd >/dev/null 2>&1 || /usr/sbin/sshd 2>/dev/null
-# SSH as chronos using the cshell key, then sudo into cshell
-# StrictHostKeyChecking=no avoids the host key prompt
-ssh -i /usr/local/cshell_key \
-    -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    -o LogLevel=ERROR \
-    chronos@localhost \
-    "sudo /usr/local/bin/cshell"
-STUB
+    # Write crosh stub — now sudo works after reboot with minioverride
+    echo -e "${DIM}    Writing crosh stub...${RST}"
+    printf '#!/bin/bash\nexec sudo /usr/local/bin/cshell\n' > "$CROSH_PATH"
     chmod +x "$CROSH_PATH"
     echo -e "${GRN}    Crosh stub installed.${RST}"
 
     echo ""
     echo -e "${GRN}[+] cshell installed!${RST}"
-    echo -e "    Open crosh ${DIM}(Ctrl+Alt+T)${RST} to launch.\n"
+    if [[ $NEEDS_REBOOT -eq 1 ]]; then
+        echo -e "${YLW}[!] REBOOT REQUIRED for sudo fix to take effect.${RST}"
+        echo -e "    After reboot, open crosh (Ctrl+Alt+T) to launch cshell.\n"
+        echo -ne "  Reboot now? [y/N]: "
+        local fd; [[ ! -t 0 ]] && exec 3</dev/tty && fd=3 || fd=0
+        read -r rb <&$fd; [[ $fd -eq 3 ]] && exec 3<&-
+        [[ "$rb" =~ ^[Yy]$ ]] && reboot
+    else
+        echo -e "    Open crosh (Ctrl+Alt+T) to launch.\n"
+    fi
     echo -ne "  ${DIM}Press any key to exit...${RST}"
-    read -rsn1 </dev/tty
+    read -rsn1 </dev/tty 2>/dev/null || read -rsn1
     exit 0
 }
 
 # ─────────────────────────────────────────
-#  DELETE CSHELL
+#  DELETE
 # ─────────────────────────────────────────
 do_delete() {
     banner
     echo -e "${YLW}[*] Deleting cshell...${RST}\n"
     [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" --delete
     remount_rw
+    remove_minioverride
     rm -f "$SHELL_PATH" && echo -e "${GRN}[+] Removed ${SHELL_PATH}${RST}" \
         || echo -e "${YLW}[!] ${SHELL_PATH} not found.${RST}"
-    rm -f "$SSH_KEY_PATH" "${SSH_KEY_PATH}.pub"
-    # Remove cshell key from authorized_keys
-    if [[ -f "$AUTH_KEYS" ]]; then
-        grep -v "cshell" "$AUTH_KEYS" > /tmp/ak_tmp && mv /tmp/ak_tmp "$AUTH_KEYS"
-    fi
-    echo -e "${DIM}    Use 'Restore crosh to factory' to fix crosh if needed.${RST}\n"
+    echo -e "${DIM}    Use 'Restore crosh to factory' if crosh needs fixing.${RST}\n"
     echo -ne "  ${DIM}Press any key to exit...${RST}"
-    read -rsn1 </dev/tty
-    exit 0
+    read -rsn1 </dev/tty 2>/dev/null || read -rsn1; exit 0
 }
 
 # ─────────────────────────────────────────
@@ -278,18 +280,14 @@ do_restore_crosh() {
     [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" --restore
     remount_rw
     if [[ -f "$CROSH_BACKUP" ]]; then
-        cp "$CROSH_BACKUP" "$CROSH_PATH"
-        chmod +x "$CROSH_PATH"
+        cp "$CROSH_BACKUP" "$CROSH_PATH" && chmod +x "$CROSH_PATH"
         rm -f "$CROSH_BACKUP"
         echo -e "${GRN}[+] Original crosh restored.${RST}"
     else
-        echo -e "${RED}[!] No backup found at ${CROSH_BACKUP}.${RST}"
-        echo -e "    Recovery: Esc+Refresh+Power → Recovery Mode"
+        echo -e "${RED}[!] No backup found. Recovery: Esc+Refresh+Power${RST}"
     fi
-    echo ""
-    echo -ne "  ${DIM}Press any key to exit...${RST}"
-    read -rsn1 </dev/tty
-    exit 0
+    echo -ne "\n  ${DIM}Press any key to exit...${RST}"
+    read -rsn1 </dev/tty 2>/dev/null || read -rsn1; exit 0
 }
 
 # ─────────────────────────────────────────
@@ -302,15 +300,19 @@ page_sysinfo() {
     local version=$(grep CHROMEOS_RELEASE_VERSION /etc/lsb-release 2>/dev/null | cut -d= -f2)
     local channel=$(grep CHROMEOS_RELEASE_TRACK /etc/lsb-release 2>/dev/null | cut -d= -f2)
     local cpu=$(grep "model name" /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs)
+    local cores=$(grep -c "^processor" /proc/cpuinfo 2>/dev/null)
     local mem_total=$(awk '/MemTotal/{printf "%.1f GB",$2/1024/1024}' /proc/meminfo)
     local mem_free=$(awk '/MemAvailable/{printf "%.1f GB",$2/1024/1024}' /proc/meminfo)
+    local arch=$(uname -m)
     echo -e "  ${CYN}Board:${RST}    ${board:-unknown}"
     echo -e "  ${CYN}Version:${RST}  ${version:-unknown}  (${channel:-unknown})"
-    echo -e "  ${CYN}Kernel:${RST}   $(uname -r)"
-    echo -e "  ${CYN}CPU:${RST}      ${cpu:-unknown}"
+    echo -e "  ${CYN}Kernel:${RST}   $(uname -r) [${arch}]"
+    echo -e "  ${CYN}CPU:${RST}      ${cpu:-unknown} (${cores} cores)"
     echo -e "  ${CYN}RAM:${RST}      ${mem_free} free / ${mem_total} total"
     echo -e "  ${CYN}Uptime:${RST}   $(uptime -p 2>/dev/null || uptime)"
     echo -e "  ${CYN}User:${RST}     $(whoami) (uid=$(id -u))"
+    echo -e "  ${CYN}Hostname:${RST} $(hostname)"
+    echo -e "  ${CYN}minioverride:${RST} $( [[ -f "$OVERRIDE_SO" ]] && echo "${GRN}installed${RST}" || echo "${YLW}not installed${RST}")"
     pause_key
 }
 
@@ -330,15 +332,17 @@ page_battery() {
     local efull=$(cat "$bat/energy_full" 2>/dev/null)
     local edesign=$(cat "$bat/energy_full_design" 2>/dev/null)
     local voltage=$(cat "$bat/voltage_now" 2>/dev/null)
+    local current=$(cat "$bat/current_now" 2>/dev/null)
     echo -e "  ${CYN}Status:${RST}  $status"
     echo -e "  ${CYN}Charge:${RST}  ${cap}%"
     if [[ -n "$efull" && -n "$edesign" && "$edesign" -gt 0 ]]; then
         local health=$(awk "BEGIN{printf \"%.1f\",($efull/$edesign)*100}")
-        echo -e "  ${CYN}Health:${RST}  ${health}% of design capacity"
+        echo -e "  ${CYN}Health:${RST}  ${health}%  of design capacity"
         echo -e "  ${CYN}Full:${RST}    $(awk "BEGIN{printf \"%.2f Wh\",$efull/1000000}")"
         echo -e "  ${CYN}Design:${RST}  $(awk "BEGIN{printf \"%.2f Wh\",$edesign/1000000}")"
     fi
-    [[ -n "$voltage" ]] && echo -e "  ${CYN}Voltage:${RST} $(awk "BEGIN{printf \"%.2f V\",$voltage/1000000}")"
+    [[ -n "$voltage" ]] && echo -e "  ${CYN}Voltage:${RST} $(awk "BEGIN{printf \"%.3f V\",$voltage/1000000}")"
+    [[ -n "$current" ]] && echo -e "  ${CYN}Current:${RST} $(awk "BEGIN{printf \"%.0f mA\",$current/1000}")"
     pause_key
 }
 
@@ -346,9 +350,12 @@ page_devmode() {
     banner
     echo -e "  ${WHT}── Dev Mode / Boot Flags ────────────────────────────${RST}\n"
     if command -v crossystem &>/dev/null; then
-        for key in devsw_boot dev_boot_usb dev_boot_signed_only wpsw_cur fwid; do
+        for key in devsw_boot dev_boot_usb dev_boot_signed_only wpsw_cur fwid ro_fwid; do
             printf "  ${CYN}%-28s${RST} %s\n" "$key" "$(crossystem $key 2>/dev/null || echo n/a)"
         done
+        echo ""
+        echo -e "  ${DIM}Full crossystem output:${RST}"
+        crossystem 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
     else
         echo "  crossystem not available."
     fi
@@ -359,22 +366,26 @@ page_net() {
     banner
     echo -e "  ${WHT}── Network ──────────────────────────────────────────${RST}\n"
     ip -br addr show 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
-    echo -e "\n  ${DIM}Default route:${RST}"
-    ip route show default 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+    echo -e "\n  ${DIM}Routes:${RST}"
+    ip route 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+    echo -e "\n  ${DIM}DNS:${RST}"
+    cat /etc/resolv.conf 2>/dev/null | grep nameserver | while IFS= read -r l; do echo "  $l"; done
     pause_key
 }
 
 page_storage() {
     banner
     echo -e "  ${WHT}── Storage ──────────────────────────────────────────${RST}\n"
-    df -h 2>/dev/null | grep -v "^tmpfs\|^devtmpfs" | while IFS= read -r l; do echo "  $l"; done
+    df -h 2>/dev/null | grep -v "^tmpfs\|^devtmpfs\|^udev" | while IFS= read -r l; do echo "  $l"; done
+    echo -e "\n  ${DIM}Block devices:${RST}"
+    lsblk 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
     pause_key
 }
 
 page_procs() {
     banner
-    echo -e "  ${WHT}── Top Processes ────────────────────────────────────${RST}\n"
-    ps aux --sort=-%cpu 2>/dev/null | head -16 | while IFS= read -r l; do echo "  $l"; done
+    echo -e "  ${WHT}── Top Processes (by CPU) ───────────────────────────${RST}\n"
+    ps aux --sort=-%cpu 2>/dev/null | head -20 | while IFS= read -r l; do echo "  $l"; done
     pause_key
 }
 
@@ -397,6 +408,63 @@ page_extensions() {
     pause_key
 }
 
+page_vpd() {
+    banner
+    echo -e "  ${WHT}── VPD (Vital Product Data) ─────────────────────────${RST}\n"
+    if command -v vpd &>/dev/null; then
+        echo -e "  ${DIM}RO VPD:${RST}"
+        vpd -l 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+    else
+        echo "  vpd tool not available."
+    fi
+    pause_key
+}
+
+page_sensors() {
+    banner
+    echo -e "  ${WHT}── Sensors / Temperature ────────────────────────────${RST}\n"
+    # CPU temp
+    for f in /sys/class/thermal/thermal_zone*/temp; do
+        [[ -f "$f" ]] || continue
+        local zone=$(echo "$f" | grep -o 'zone[0-9]*')
+        local type=$(cat "$(dirname $f)/type" 2>/dev/null || echo "unknown")
+        local temp=$(awk "BEGIN{printf \"%.1f°C\", $(cat $f)/1000}")
+        printf "  ${CYN}%-12s${RST} %-20s %s\n" "$zone" "($type)" "$temp"
+    done
+    echo ""
+    # Fan speed via ectool
+    if command -v ectool &>/dev/null; then
+        echo -e "  ${DIM}Fan:${RST}"
+        ectool pwmgetfanrpm 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+    fi
+    pause_key
+}
+
+page_usb() {
+    banner
+    echo -e "  ${WHT}── USB Devices ──────────────────────────────────────${RST}\n"
+    if command -v lsusb &>/dev/null; then
+        lsusb 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+    else
+        # Fallback: read from sysfs
+        for dev in /sys/bus/usb/devices/*/; do
+            local vendor=$(cat "$dev/idVendor" 2>/dev/null)
+            local product=$(cat "$dev/idProduct" 2>/dev/null)
+            local name=$(cat "$dev/product" 2>/dev/null || echo "Unknown")
+            [[ -n "$vendor" && -n "$product" ]] && \
+                echo -e "  ${DIM}${vendor}:${product}${RST}  $name"
+        done
+    fi
+    pause_key
+}
+
+page_firewall() {
+    banner
+    echo -e "  ${WHT}── Firewall / iptables ──────────────────────────────${RST}\n"
+    iptables -L -n 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+    pause_key
+}
+
 menu_rootfs() {
     draw_menu "Rootfs Mount" "Remount read-write" "Remount read-only" "← Back"
     case $MENU_RESULT in
@@ -406,7 +474,11 @@ menu_rootfs() {
 }
 
 menu_updates() {
-    draw_menu "Update Engine" "Block auto-updates" "Allow auto-updates" "← Back"
+    draw_menu "Update Engine" \
+        "Block auto-updates (stop update-engine)" \
+        "Allow auto-updates (start update-engine)" \
+        "Check update status" \
+        "← Back"
     case $MENU_RESULT in
         0) banner
            systemctl stop update-engine 2>/dev/null; stop update-engine 2>/dev/null
@@ -415,6 +487,10 @@ menu_updates() {
         1) banner
            systemctl start update-engine 2>/dev/null; start update-engine 2>/dev/null
            echo -e "  ${GRN}[+] Update engine re-enabled.${RST}"; pause_key ;;
+        2) banner
+           echo -e "  ${WHT}── Update Status ────────────────────────────────────${RST}\n"
+           update_engine_client --status 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+           pause_key ;;
     esac
 }
 
@@ -454,6 +530,17 @@ menu_scripts() {
     done
 }
 
+menu_power() {
+    draw_menu "Power" \
+        "Reboot" \
+        "Shut down" \
+        "← Back"
+    case $MENU_RESULT in
+        0) echo -e "${YLW}[*] Rebooting...${RST}"; sleep 1; reboot ;;
+        1) echo -e "${YLW}[*] Shutting down...${RST}"; sleep 1; poweroff ;;
+    esac
+}
+
 page_bash() {
     banner
     echo -e "  ${YLW}[*] Dropping to root bash. Type 'exit' to return.${RST}\n"
@@ -461,36 +548,75 @@ page_bash() {
     echo -e "\n  ${CYN}[*] Back in cshell.${RST}"; sleep 1
 }
 
+page_repair_sudo() {
+    banner
+    echo -e "  ${WHT}── Repair sudo (minioverride) ────────────────────────${RST}\n"
+    echo -e "  This re-installs the minioverride LD_PRELOAD fix that"
+    echo -e "  allows sudo to work from crosh on ChromeOS R117+.\n"
+    echo -e "  A reboot is required after this step.\n"
+    echo -ne "  ${CYN}Continue? [y/N]:${RST} "
+    read -r confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        remount_rw
+        mkdir -p /usr/local/bin
+        NEEDS_REBOOT=0
+        install_minioverride
+        echo ""
+        if [[ $NEEDS_REBOOT -eq 1 ]]; then
+            echo -ne "\n  Reboot now? [y/N]: "
+            read -r rb; [[ "$rb" =~ ^[Yy]$ ]] && reboot
+        fi
+    else
+        echo -e "  ${DIM}Cancelled.${RST}"
+    fi
+    pause_key
+}
+
+# ─────────────────────────────────────────
+#  MAIN SHELL MENU
+# ─────────────────────────────────────────
 shell_main_menu() {
     while true; do
         draw_menu "Main Menu" \
             "System Info" \
             "Battery Health" \
+            "Sensors / Temperature" \
             "Dev Mode / Boot Flags" \
+            "VPD Info" \
             "Network" \
             "Storage" \
             "Processes" \
+            "USB Devices" \
+            "Firewall (iptables)" \
             "Chrome Extensions" \
             "Rootfs Mount" \
             "Update Engine" \
             "Wipe Logs" \
             "Scripts  ›  K-Patch / SAUB / R-Patch" \
+            "Repair sudo (reinstall minioverride)" \
             "Root Bash Shell" \
+            "Power  ›  Reboot / Shutdown" \
             "Exit"
         case $MENU_RESULT in
             0)  page_sysinfo ;;
             1)  page_battery ;;
-            2)  page_devmode ;;
-            3)  page_net ;;
-            4)  page_storage ;;
-            5)  page_procs ;;
-            6)  page_extensions ;;
-            7)  menu_rootfs ;;
-            8)  menu_updates ;;
-            9)  page_wipe_logs ;;
-            10) menu_scripts ;;
-            11) page_bash ;;
-            12|-1) echo -e "${DIM}Goodbye.${RST}"; exit 0 ;;
+            2)  page_sensors ;;
+            3)  page_devmode ;;
+            4)  page_vpd ;;
+            5)  page_net ;;
+            6)  page_storage ;;
+            7)  page_procs ;;
+            8)  page_usb ;;
+            9)  page_firewall ;;
+            10) page_extensions ;;
+            11) menu_rootfs ;;
+            12) menu_updates ;;
+            13) page_wipe_logs ;;
+            14) menu_scripts ;;
+            15) page_repair_sudo ;;
+            16) page_bash ;;
+            17) menu_power ;;
+            18|-1) echo -e "${DIM}Goodbye.${RST}"; exit 0 ;;
         esac
     done
 }
@@ -501,16 +627,14 @@ shell_main_menu() {
 [[ "$1" == "--delete"  ]] && { [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" --delete; do_delete; }
 [[ "$1" == "--restore" ]] && { [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" --restore; do_restore_crosh; }
 
-# Escalate to root
 [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" "$@"
 
-# If launched as the installed shell (from crosh), go to shell menu
+# If launched as installed shell, go straight to shell menu
 if [[ "$(realpath "$0" 2>/dev/null)" == "$SHELL_PATH" ]]; then
-    shell_main_menu
-    exit 0
+    shell_main_menu; exit 0
 fi
 
-# ── Setup menu (curl | bash or bash <(...))
+# Setup menu
 while true; do
     draw_menu "What would you like to do?" \
         "Install cshell" \
