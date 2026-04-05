@@ -1,12 +1,16 @@
 #!/bin/bash
-# cshell - Custom ChromeOS Shell
-# Run: curl -sSL <url> | sudo bash
+# cshell - Custom ChromeOS Shell v1.3
+# Fixes crosh root access via SSH key bypass (NO_NEW_PRIVS workaround)
+# Run: curl -sSL <your-raw-url> | sudo bash
+#  OR: sudo bash <(curl -sSL <your-raw-url>)
 
 SCRIPT_URL="https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/cshell"
 SHELL_PATH="/usr/local/bin/cshell"
 CROSH_PATH="/usr/bin/crosh"
 CROSH_BACKUP="/usr/bin/crosh.real"
-VERSION="1.2"
+SSH_KEY_PATH="/usr/local/cshell_key"
+AUTH_KEYS="/home/chronos/.ssh/authorized_keys"
+VERSION="1.3"
 
 RED='\033[0;31m'
 GRN='\033[0;32m'
@@ -17,6 +21,7 @@ DIM='\033[2m'
 RST='\033[0m'
 REV='\033[7m'
 
+# ─────────────────────────────────────────
 remount_rw() {
     mount -o remount,rw / 2>/dev/null
     mount -o remount,rw /usr 2>/dev/null
@@ -41,39 +46,66 @@ pause_key() {
     read -rsn1
 }
 
+# ─────────────────────────────────────────
+#  MENU — works both piped AND interactive
+#  If stdin is not a tty (piped), falls back
+#  to numbered text selection
+# ─────────────────────────────────────────
 draw_menu() {
     local title="$1"; shift
     local items=("$@")
-    local selected=0
     local count=${#items[@]}
-    while true; do
+
+    # Arrow-key menu only works when stdin is a terminal
+    if [[ -t 0 ]]; then
+        local selected=0
+        while true; do
+            banner
+            echo -e "  ${WHT}${title}${RST}\n"
+            for i in "${!items[@]}"; do
+                if [[ $i -eq $selected ]]; then
+                    echo -e "  ${REV}${CYN}  ›  ${items[$i]}  ${RST}"
+                else
+                    echo -e "  ${DIM}     ${items[$i]}${RST}"
+                fi
+            done
+            echo -e "\n  ${DIM}↑ ↓  navigate    Enter  select    Q  quit${RST}"
+            IFS= read -rsn1 key
+            if [[ "$key" == $'\x1b' ]]; then
+                read -rsn2 -t 0.1 seq
+                case "$seq" in
+                    '[A') (( selected > 0 )) && (( selected-- )) ;;
+                    '[B') (( selected < count-1 )) && (( selected++ )) ;;
+                esac
+            elif [[ "$key" == "" ]]; then
+                MENU_RESULT=$selected; return
+            elif [[ "$key" == "q" || "$key" == "Q" ]]; then
+                MENU_RESULT=-1; return
+            fi
+        done
+    else
+        # Fallback: numbered text menu for piped mode
+        # Re-open /dev/tty so we can read from the terminal even when piped
+        exec 3</dev/tty
         banner
         echo -e "  ${WHT}${title}${RST}\n"
         for i in "${!items[@]}"; do
-            if [[ $i -eq $selected ]]; then
-                echo -e "  ${REV}${CYN}  ›  ${items[$i]}  ${RST}"
-            else
-                echo -e "  ${DIM}     ${items[$i]}${RST}"
-            fi
+            echo -e "  ${CYN}$((i+1)))${RST}  ${items[$i]}"
         done
-        echo -e "\n  ${DIM}↑ ↓  navigate    Enter  select    Q  quit${RST}"
-        IFS= read -rsn1 key
-        if [[ "$key" == $'\x1b' ]]; then
-            read -rsn2 -t 0.1 seq
-            case "$seq" in
-                '[A') (( selected > 0 )) && (( selected-- )) ;;
-                '[B') (( selected < count-1 )) && (( selected++ )) ;;
-            esac
-        elif [[ "$key" == "" ]]; then
-            MENU_RESULT=$selected; return
-        elif [[ "$key" == "q" || "$key" == "Q" ]]; then
-            MENU_RESULT=-1; return
+        echo ""
+        echo -ne "  ${WHT}Select [1-${count}]:${RST} "
+        read -r choice <&3
+        exec 3<&-
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
+            MENU_RESULT=$((choice - 1))
+        else
+            MENU_RESULT=-1
         fi
-    done
+    fi
 }
 
 # ─────────────────────────────────────────
-#  ROOTFS CHECK — called before install
+#  ROOTFS CHECK
 # ─────────────────────────────────────────
 check_rootfs() {
     remount_rw
@@ -81,22 +113,23 @@ check_rootfs() {
         rm -f /usr/bin/.rw_test
         return 0
     fi
-
     banner
     echo -e "  ${YLW}⚠  Rootfs Verification is ENABLED${RST}\n"
-    echo -e "  cshell requires a writable rootfs to install."
-    echo -e "  Rootfs verification must be disabled first.\n"
+    echo -e "  cshell needs a writable rootfs to install."
     echo -e "  ${WHT}Disable rootfs verification now?${RST}"
-    echo -e "  ${DIM}(runs make_dev_ssd.sh --remove_rootfs_verification)${RST}\n"
+    echo -e "  ${DIM}(runs make_dev_ssd.sh --remove_rootfs_verification then reboots)${RST}\n"
+
+    local tty_fd
+    if [[ ! -t 0 ]]; then exec 3</dev/tty; tty_fd=3; else tty_fd=0; fi
     echo -ne "  ${CYN}[y/N]:${RST} "
-    read -r confirm
+    read -r confirm <&$tty_fd
+    [[ $tty_fd -eq 3 ]] && exec 3<&-
+
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        echo ""
-        echo -e "${YLW}[*] Disabling rootfs verification...${RST}"
-        sudo /usr/share/vboot/bin/make_dev_ssd.sh --remove_rootfs_verification 2>&1 | \
+        echo -e "\n${YLW}[*] Disabling rootfs verification...${RST}"
+        /usr/share/vboot/bin/make_dev_ssd.sh --remove_rootfs_verification 2>&1 | \
             while IFS= read -r l; do echo "  $l"; done
-        echo ""
-        echo -e "${GRN}[+] Done. Reboot required for changes to take effect.${RST}"
+        echo -e "\n${GRN}[+] Done. Reboot required.${RST}"
         echo -e "${YLW}[*] After reboot, re-run the install command.${RST}\n"
         echo -ne "  Reboot now? [y/N]: "
         read -r rb
@@ -106,6 +139,46 @@ check_rootfs() {
         echo -e "\n  ${RED}[!] Cannot install without writable rootfs. Exiting.${RST}\n"
         exit 1
     fi
+}
+
+# ─────────────────────────────────────────
+#  SSH KEY SETUP
+#  This is the core fix for NO_NEW_PRIVS.
+#  We generate a key for chronos and authorize
+#  it, so the crosh stub can SSH as chronos
+#  then sudo without hitting the privs block.
+# ─────────────────────────────────────────
+setup_ssh_key() {
+    echo -e "${DIM}    Setting up SSH key for crosh root access...${RST}"
+
+    # Start sshd if not running
+    if ! pgrep -x sshd >/dev/null 2>&1; then
+        /usr/sbin/sshd 2>/dev/null || true
+        sleep 1
+    fi
+
+    # Generate dedicated key for cshell
+    mkdir -p "$(dirname "$SSH_KEY_PATH")"
+    rm -f "$SSH_KEY_PATH" "${SSH_KEY_PATH}.pub"
+    ssh-keygen -t ed25519 -f "$SSH_KEY_PATH" -N "" -q
+
+    # Authorize the key for chronos user
+    local auth_dir="/home/chronos/.ssh"
+    mkdir -p "$auth_dir"
+    chown chronos:chronos "$auth_dir"
+    chmod 700 "$auth_dir"
+
+    # Add key if not already there
+    local pubkey=$(cat "${SSH_KEY_PATH}.pub")
+    touch "$AUTH_KEYS"
+    chown chronos:chronos "$AUTH_KEYS"
+    chmod 600 "$AUTH_KEYS"
+    if ! grep -qF "$pubkey" "$AUTH_KEYS" 2>/dev/null; then
+        echo "$pubkey" >> "$AUTH_KEYS"
+    fi
+
+    chmod 600 "$SSH_KEY_PATH"
+    echo -e "${GRN}    SSH key installed.${RST}"
 }
 
 # ─────────────────────────────────────────
@@ -121,6 +194,7 @@ do_install() {
 
     mkdir -p /usr/local/bin
 
+    # Download cshell to permanent path
     echo -e "${DIM}    Downloading cshell to ${SHELL_PATH}...${RST}"
     if curl -sSL "$SCRIPT_URL" -o "$SHELL_PATH" 2>/dev/null && [[ -s "$SHELL_PATH" ]]; then
         chmod +x "$SHELL_PATH"
@@ -130,12 +204,16 @@ do_install() {
         chmod +x "$SHELL_PATH"
         echo -e "${GRN}    Copied from source to ${SHELL_PATH}${RST}"
     else
-        echo -e "${RED}[!] Could not obtain script. Check network and try again.${RST}"
+        echo -e "${RED}[!] Could not obtain script. Check network.${RST}"
         exit 1
     fi
 
     [[ ! -x "$SHELL_PATH" ]] && echo -e "${RED}[!] Install failed.${RST}" && exit 1
 
+    # Setup SSH key (the NO_NEW_PRIVS workaround)
+    setup_ssh_key
+
+    # Backup crosh
     if [[ ! -f "$CROSH_BACKUP" ]]; then
         echo -e "${DIM}    Backing up original crosh...${RST}"
         cp "$CROSH_PATH" "$CROSH_BACKUP" && echo -e "${GRN}    Backed up to ${CROSH_BACKUP}${RST}"
@@ -143,15 +221,30 @@ do_install() {
         echo -e "${DIM}    Crosh backup already exists.${RST}"
     fi
 
-    echo -e "${DIM}    Writing crosh stub...${RST}"
-    printf '#!/bin/bash\nexec sudo /usr/local/bin/cshell\n' > "$CROSH_PATH"
+    # Write crosh stub — uses SSH to bypass NO_NEW_PRIVS
+    echo -e "${DIM}    Writing crosh stub (SSH-based root bypass)...${RST}"
+    cat > "$CROSH_PATH" << 'STUB'
+#!/bin/bash
+# cshell crosh stub - bypasses NO_NEW_PRIVS via SSH
+# Start sshd if needed
+pgrep -x sshd >/dev/null 2>&1 || /usr/sbin/sshd 2>/dev/null
+# SSH as chronos using the cshell key, then sudo into cshell
+# StrictHostKeyChecking=no avoids the host key prompt
+ssh -i /usr/local/cshell_key \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR \
+    chronos@localhost \
+    "sudo /usr/local/bin/cshell"
+STUB
     chmod +x "$CROSH_PATH"
     echo -e "${GRN}    Crosh stub installed.${RST}"
 
     echo ""
-    echo -e "${GRN}[+] cshell installed! Open crosh (Ctrl+Alt+T) to launch.${RST}\n"
+    echo -e "${GRN}[+] cshell installed!${RST}"
+    echo -e "    Open crosh ${DIM}(Ctrl+Alt+T)${RST} to launch.\n"
     echo -ne "  ${DIM}Press any key to exit...${RST}"
-    read -rsn1
+    read -rsn1 </dev/tty
     exit 0
 }
 
@@ -163,14 +256,16 @@ do_delete() {
     echo -e "${YLW}[*] Deleting cshell...${RST}\n"
     [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" --delete
     remount_rw
-    if rm -f "$SHELL_PATH" 2>/dev/null; then
-        echo -e "${GRN}[+] Removed ${SHELL_PATH}${RST}"
-    else
-        echo -e "${YLW}[!] ${SHELL_PATH} not found or already removed.${RST}"
+    rm -f "$SHELL_PATH" && echo -e "${GRN}[+] Removed ${SHELL_PATH}${RST}" \
+        || echo -e "${YLW}[!] ${SHELL_PATH} not found.${RST}"
+    rm -f "$SSH_KEY_PATH" "${SSH_KEY_PATH}.pub"
+    # Remove cshell key from authorized_keys
+    if [[ -f "$AUTH_KEYS" ]]; then
+        grep -v "cshell" "$AUTH_KEYS" > /tmp/ak_tmp && mv /tmp/ak_tmp "$AUTH_KEYS"
     fi
-    echo -e "${DIM}    Crosh stub may still be active. Use 'Restore crosh' if needed.${RST}\n"
+    echo -e "${DIM}    Use 'Restore crosh to factory' to fix crosh if needed.${RST}\n"
     echo -ne "  ${DIM}Press any key to exit...${RST}"
-    read -rsn1
+    read -rsn1 </dev/tty
     exit 0
 }
 
@@ -186,19 +281,19 @@ do_restore_crosh() {
         cp "$CROSH_BACKUP" "$CROSH_PATH"
         chmod +x "$CROSH_PATH"
         rm -f "$CROSH_BACKUP"
-        echo -e "${GRN}[+] Original crosh restored successfully.${RST}"
+        echo -e "${GRN}[+] Original crosh restored.${RST}"
     else
         echo -e "${RED}[!] No backup found at ${CROSH_BACKUP}.${RST}"
-        echo -e "    If crosh is broken, use Recovery Mode (Esc+Refresh+Power)."
+        echo -e "    Recovery: Esc+Refresh+Power → Recovery Mode"
     fi
     echo ""
     echo -ne "  ${DIM}Press any key to exit...${RST}"
-    read -rsn1
+    read -rsn1 </dev/tty
     exit 0
 }
 
 # ─────────────────────────────────────────
-#  SHELL PAGES (launched from crosh)
+#  SHELL PAGES
 # ─────────────────────────────────────────
 page_sysinfo() {
     banner
@@ -409,13 +504,13 @@ shell_main_menu() {
 # Escalate to root
 [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" "$@"
 
-# If launched as the installed shell (from crosh stub), go straight to shell menu
+# If launched as the installed shell (from crosh), go to shell menu
 if [[ "$(realpath "$0" 2>/dev/null)" == "$SHELL_PATH" ]]; then
     shell_main_menu
     exit 0
 fi
 
-# Otherwise: setup menu (curl | bash scenario)
+# ── Setup menu (curl | bash or bash <(...))
 while true; do
     draw_menu "What would you like to do?" \
         "Install cshell" \
