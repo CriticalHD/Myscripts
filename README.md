@@ -19,7 +19,7 @@ Server Auto Update Blocker | works until next recovery
 
 ````curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/SAUB | sudo bash````
 
-## Sudo Crosh
-Enable sudo use in crosh shell
+## Custom Shell
+Implements my custom shell into crosh :)
 
-````curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/S-Crosh | sudo bash````
+````curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/C-Crosh | sudo bash````
