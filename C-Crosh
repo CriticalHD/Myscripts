@@ -1,6 +1,7 @@
 #!/bin/bash
-# cshell - Custom ChromeOS Shell v1.5
-# Run: curl -sSL <your-raw-url> | sudo bash
+# cshell v2.0 — Custom ChromeOS Shell
+# Run: curl -sSL <url> | sudo bash
+# Persists across powerwash via rootfs (requires patched rootfs)
 
 SCRIPT_URL="https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/cshell"
 SHELL_PATH="/usr/local/bin/cshell"
@@ -8,412 +9,406 @@ CROSH_PATH="/usr/bin/crosh"
 CROSH_BACKUP="/usr/bin/crosh.real"
 OVERRIDE_SO="/usr/local/bin/minioverride.so"
 UI_CONF="/etc/init/ui.conf"
-VERSION="1.5"
+# Powerwash-persistent copy lives on rootfs (survives wipe)
+ROOTFS_SHELL="/usr/bin/cshell_rootfs"
+ROOTFS_CROSH_STUB="/usr/bin/crosh"
+INIT_SCRIPT="/etc/init/cshell-restore.conf"
+VERSION="2.0"
 
-RED='\033[0;31m'
-GRN='\033[0;32m'
-YLW='\033[1;33m'
-CYN='\033[0;36m'
-WHT='\033[1;37m'
-DIM='\033[2m'
-RST='\033[0m'
-REV='\033[7m'
+R='\033[0;31m'   # red
+G='\033[0;32m'   # green
+Y='\033[1;33m'   # yellow
+C='\033[0;36m'   # cyan
+W='\033[1;37m'   # white
+D='\033[2m'      # dim
+N='\033[0m'      # reset
+V='\033[7m'      # reverse
+
+# ── trap Ctrl+C everywhere so it never spams ^C ──────────────────
+trap 'echo -e "\n${D}Interrupted.${N}"; exit 130' INT TERM
 
 remount_rw() {
-    mount -o remount,rw / 2>/dev/null
-    mount -o remount,rw /usr 2>/dev/null
-    mount -o remount,rw /etc 2>/dev/null
+    mount -o remount,rw /     2>/dev/null || true
+    mount -o remount,rw /usr  2>/dev/null || true
+    mount -o remount,rw /etc  2>/dev/null || true
 }
+
+# Safe read that always reads from /dev/tty
+tread() { read -r "$1" </dev/tty 2>/dev/null || read -r "$1"; }
+tread1() { IFS= read -rsn1 "$1" </dev/tty 2>/dev/null || IFS= read -rsn1 "$1"; }
 
 banner() {
     clear
-    echo -e "${CYN}"
+    echo -e "${C}"
     echo "   ██████╗███████╗██╗  ██╗███████╗██╗     ██╗     "
     echo "  ██╔════╝██╔════╝██║  ██║██╔════╝██║     ██║     "
     echo "  ██║     ███████╗███████║█████╗  ██║     ██║     "
     echo "  ██║     ╚════██║██╔══██║██╔══╝  ██║     ██║     "
     echo "  ╚██████╗███████║██║  ██║███████╗███████╗███████╗"
     echo "   ╚═════╝╚══════╝╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝"
-    echo -e "${RST}  ${WHT}Custom ChromeOS Shell${RST} ${DIM}v${VERSION}${RST}  |  ${GRN}root@$(hostname -s 2>/dev/null || echo chromebook)${RST}"
-    echo -e "  ${DIM}────────────────────────────────────────────────────${RST}"
+    echo -e "${N}  ${W}Custom ChromeOS Shell${N} ${D}v${VERSION}${N}  |  ${G}root@$(hostname -s 2>/dev/null || echo chromebook)${N}"
+    echo -e "  ${D}────────────────────────────────────────────────────${N}"
     echo ""
 }
 
 pause_key() {
-    echo -e "\n  ${DIM}Press any key to go back...${RST}"
-    read -rsn1
+    echo -e "\n  ${D}Press any key to go back...${N}"
+    tread1 _k
 }
 
-tty_read() {
-    # Read from terminal even when stdin is a pipe
-    if [[ -t 0 ]]; then
-        read -r "$1"
-    else
-        exec 9</dev/tty
-        read -r "$1" <&9
-        exec 9<&-
-    fi
+confirm_yn() {
+    # Usage: confirm_yn "prompt" && do_thing
+    echo -ne "  ${Y}$1 [y/N]:${N} "
+    local _a; tread _a
+    [[ "$_a" =~ ^[Yy]$ ]]
 }
 
-# ─────────────────────────────────────────
-#  MENU
-# ─────────────────────────────────────────
+# ── Arrow-key menu ───────────────────────────────────────────────
+# Sets MENU_RESULT to 0-based index, or -1 on quit
 draw_menu() {
     local title="$1"; shift
     local items=("$@")
     local count=${#items[@]}
 
-    if [[ -t 0 ]]; then
-        local selected=0
+    # Check if we have a real terminal
+    if [[ -t 0 && -t 1 ]]; then
+        local sel=0
         while true; do
             banner
-            echo -e "  ${WHT}${title}${RST}\n"
+            echo -e "  ${W}${title}${N}\n"
             for i in "${!items[@]}"; do
-                if [[ $i -eq $selected ]]; then
-                    echo -e "  ${REV}${CYN}  ›  ${items[$i]}  ${RST}"
+                if [[ $i -eq $sel ]]; then
+                    echo -e "  ${V}${C}  ›  ${items[$i]}  ${N}"
                 else
-                    echo -e "  ${DIM}     ${items[$i]}${RST}"
+                    echo -e "  ${D}     ${items[$i]}${N}"
                 fi
             done
-            echo -e "\n  ${DIM}↑ ↓  navigate    Enter  select    Q  quit${RST}"
-            IFS= read -rsn1 key
-            if [[ "$key" == $'\x1b' ]]; then
-                read -rsn2 -t 0.1 seq
-                case "$seq" in
-                    '[A') (( selected > 0 )) && (( selected-- )) ;;
-                    '[B') (( selected < count-1 )) && (( selected++ )) ;;
+            echo -e "\n  ${D}↑↓ navigate   Enter select   Q quit${N}"
+            # Read keypress from tty
+            local k; IFS= read -rsn1 k </dev/tty 2>/dev/null
+            if [[ "$k" == $'\x1b' ]]; then
+                local s; read -rsn2 -t 0.1 s </dev/tty 2>/dev/null
+                case "$s" in
+                    '[A') (( sel > 0 )) && (( sel-- )) ;;
+                    '[B') (( sel < count-1 )) && (( sel++ )) ;;
                 esac
-            elif [[ "$key" == "" ]]; then
-                MENU_RESULT=$selected; return
-            elif [[ "$key" == "q" || "$key" == "Q" ]]; then
+            elif [[ "$k" == "" ]]; then
+                MENU_RESULT=$sel; return
+            elif [[ "$k" == "q" || "$k" == "Q" || "$k" == $'\x03' ]]; then
                 MENU_RESULT=-1; return
             fi
         done
     else
-        exec 9</dev/tty
+        # Numbered fallback for piped input
         banner
-        echo -e "  ${WHT}${title}${RST}\n"
+        echo -e "  ${W}${title}${N}\n"
         for i in "${!items[@]}"; do
-            echo -e "  ${CYN}$((i+1)))${RST}  ${items[$i]}"
+            echo -e "  ${C}$((i+1)))${N}  ${items[$i]}"
         done
         echo ""
-        echo -ne "  ${WHT}Select [1-${count}]:${RST} "
-        read -r choice <&9
-        exec 9<&-
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
-            MENU_RESULT=$((choice - 1))
+        echo -ne "  ${W}Select [1-${count}]:${N} "
+        local ch; tread ch
+        if [[ "$ch" =~ ^[0-9]+$ ]] && (( ch >= 1 && ch <= count )); then
+            MENU_RESULT=$((ch-1))
         else
             MENU_RESULT=-1
         fi
     fi
 }
 
-# ─────────────────────────────────────────
-#  ROOTFS CHECK
-# ─────────────────────────────────────────
+# ── Rootfs check / make writable ────────────────────────────────
 check_rootfs() {
     remount_rw
     if touch /usr/bin/.rw_test 2>/dev/null; then
-        rm -f /usr/bin/.rw_test; return 0
+        rm -f /usr/bin/.rw_test
+        return 0
     fi
     banner
-    echo -e "  ${YLW}⚠  Rootfs Verification is ENABLED${RST}\n"
-    echo -e "  cshell needs a writable rootfs to install."
-    echo -e "  ${WHT}Disable rootfs verification now?${RST}"
-    echo -e "  ${DIM}(runs make_dev_ssd.sh --remove_rootfs_verification)${RST}\n"
-    echo -ne "  ${CYN}[y/N]:${RST} "
-    local ans; tty_read ans
-    if [[ "$ans" =~ ^[Yy]$ ]]; then
-        echo -e "\n${YLW}[*] Disabling rootfs verification...${RST}"
-        /usr/share/vboot/bin/make_dev_ssd.sh --remove_rootfs_verification 2>&1 | \
-            while IFS= read -r l; do echo "  $l"; done
-        echo -e "\n${GRN}[+] Done. Reboot then re-run install.${RST}\n"
-        echo -ne "  Reboot now? [y/N]: "
-        local rb; tty_read rb
-        [[ "$rb" =~ ^[Yy]$ ]] && reboot
+    echo -e "  ${Y}⚠  Rootfs is read-only (verification enabled)${N}\n"
+    echo -e "  cshell must disable rootfs verification to install.\n"
+    if confirm_yn "Disable rootfs verification now?"; then
+        echo -e "\n${Y}[*] Disabling rootfs verification...${N}"
+        /usr/share/vboot/bin/make_dev_ssd.sh --remove_rootfs_verification 2>&1 \
+            | while IFS= read -r l; do echo "  $l"; done
+        echo -e "\n${G}[+] Done. Reboot required — then re-run install.${N}\n"
+        if confirm_yn "Reboot now?"; then reboot; fi
         exit 0
     else
-        echo -e "\n  ${RED}[!] Cannot install without writable rootfs.${RST}\n"; exit 1
+        echo -e "\n  ${R}[!] Cannot continue without writable rootfs.${N}\n"
+        exit 1
     fi
 }
 
-# ─────────────────────────────────────────
-#  MINIOVERRIDE — compile inline with tcc
-#  or via a base64-embedded prebuilt x86_64
-#  so gcc is never required
-# ─────────────────────────────────────────
-
-# minioverride.so prebuilt x86_64 — base64 encoded
-# This is a minimal ELF shared library that stubs out 5 minijail functions
-MINIOVERRIDE_B64="f0VMRgIBAQAAAAAAAAAAAAMAOgABAAAAUAEAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAEAAOAAEAEAABgAFAAEAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAEAAAAAAAAQAAAAAAAABQAAAAQAAAAIAAAAAAAACAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAEAAAAAAAABwAAAAAAAAAAAAAAAAAAAAQAAAAIAAAAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAA="
+# ── Minioverride build ───────────────────────────────────────────
+C_SRC='int minijail_no_new_privs(void){return 0;}
+int minijail_add_fs_restriction_rx(void){return 0;}
+int minijail_add_fs_restriction_advanced_rw(void){return 0;}
+int minijail_set_enable_profile_fs_restrictions(void){return 0;}
+int minijail_enable_default_fs_restrictions(void){return 0;}'
 
 build_minioverride() {
-    # Method 1: tcc (tiny c compiler, sometimes available)
-    if command -v tcc &>/dev/null; then
-        echo -e "${DIM}    Compiling minioverride.so with tcc...${RST}"
-        cat > /tmp/mo.c << 'EOF'
-int minijail_no_new_privs(void){ return 0; }
-int minijail_add_fs_restriction_rx(void){ return 0; }
-int minijail_add_fs_restriction_advanced_rw(void){ return 0; }
-int minijail_set_enable_profile_fs_restrictions(void){ return 0; }
-int minijail_enable_default_fs_restrictions(void){ return 0; }
-EOF
-        tcc -shared /tmp/mo.c -o "$OVERRIDE_SO" 2>/dev/null && rm -f /tmp/mo.c && return 0
-    fi
+    echo "$C_SRC" > /tmp/_mo.c
+    local ok=0
 
-    # Method 2: gcc
     if command -v gcc &>/dev/null; then
-        echo -e "${DIM}    Compiling minioverride.so with gcc...${RST}"
-        cat > /tmp/mo.c << 'EOF'
-int minijail_no_new_privs(void){ return 0; }
-int minijail_add_fs_restriction_rx(void){ return 0; }
-int minijail_add_fs_restriction_advanced_rw(void){ return 0; }
-int minijail_set_enable_profile_fs_restrictions(void){ return 0; }
-int minijail_enable_default_fs_restrictions(void){ return 0; }
-EOF
-        gcc -shared -fPIC /tmp/mo.c -o "$OVERRIDE_SO" 2>/dev/null && rm -f /tmp/mo.c && return 0
+        gcc -shared -fPIC /tmp/_mo.c -o "$OVERRIDE_SO" 2>/dev/null && ok=1
+    fi
+    if [[ $ok -eq 0 ]] && command -v tcc &>/dev/null; then
+        tcc -shared /tmp/_mo.c -o "$OVERRIDE_SO" 2>/dev/null && ok=1
+    fi
+    if [[ $ok -eq 0 ]] && command -v cc &>/dev/null; then
+        cc -shared -fPIC /tmp/_mo.c -o "$OVERRIDE_SO" 2>/dev/null && ok=1
+    fi
+    rm -f /tmp/_mo.c
+
+    if [[ $ok -eq 0 ]]; then
+        echo -e "${Y}    No compiler — downloading prebuilt minioverride.so...${N}"
+        curl -sSL \
+          "https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/minioverride.so" \
+          -o "$OVERRIDE_SO" 2>/dev/null
+        [[ -s "$OVERRIDE_SO" ]] && ok=1
     fi
 
-    # Method 3: download from your GitHub (add minioverride.so to your repo)
-    echo -e "${YLW}    No compiler found — downloading prebuilt minioverride.so...${RST}"
-    curl -sSL "https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/minioverride.so" \
-        -o "$OVERRIDE_SO" 2>/dev/null
-    if [[ -f "$OVERRIDE_SO" && -s "$OVERRIDE_SO" ]]; then
+    if [[ $ok -eq 1 ]]; then
+        chmod 755 "$OVERRIDE_SO"
         return 0
     fi
-
-    # Method 4: write a hand-crafted minimal x86_64 ELF .so that just returns 0
-    # This is a real minimal shared library that exports the 5 required symbols
-    echo -e "${YLW}    Building minimal ELF stub directly...${RST}"
-    python3 - << 'PYEOF' > "$OVERRIDE_SO" 2>/dev/null
-import sys, struct
-
-# Minimal x86_64 ELF shared library
-# Each exported function is just: xor eax,eax / ret
-# Symbols: minijail_no_new_privs, minijail_add_fs_restriction_rx,
-#          minijail_add_fs_restriction_advanced_rw,
-#          minijail_set_enable_profile_fs_restrictions,
-#          minijail_enable_default_fs_restrictions
-
-# We'll write raw bytes to stdout
-import os
-so_bytes = bytes.fromhex(
-    "7f454c4602010100000000000000000003003e00010000005001000000000000"
-    "4000000000000000000000000000000000000000000000004000380004004000"
-    "060005000100000004000000000000000000000000000000000000000000000000"
-)
-# Fallback: just write a valid but empty shared lib header stub
-# that will load without crashing (functions will be missing but
-# it won't segfault the UI)
-sys.stdout.buffer.write(b'\x7fELF' + b'\x00' * 60)
-PYEOF
-
-    # Verify we got something valid
-    if file "$OVERRIDE_SO" 2>/dev/null | grep -q "ELF\|shared"; then
-        return 0
-    fi
-
-    # All methods failed
     rm -f "$OVERRIDE_SO"
     return 1
 }
 
-install_minioverride() {
-    echo -e "${DIM}    Installing minioverride (sudo fix for R117+)...${RST}"
-    mkdir -p /usr/local/bin
-
-    if build_minioverride && [[ -f "$OVERRIDE_SO" && -s "$OVERRIDE_SO" ]]; then
-        chmod 755 "$OVERRIDE_SO"
-        echo -e "${GRN}    minioverride.so ready.${RST}"
-    else
-        echo -e "${YLW}    [!] Could not build minioverride.so.${RST}"
-        echo -e "${YLW}    sudo may not work in crosh until fixed.${RST}"
-        echo -e "${YLW}    Run 'Repair sudo' from the shell menu after install.${RST}"
-        OVERRIDE_FAILED=1
-        return 1
+patch_ui_conf() {
+    [[ ! -f "$UI_CONF" ]] && return 1
+    if grep -q "minioverride" "$UI_CONF" 2>/dev/null; then
+        echo -e "${D}    ui.conf already patched.${N}"
+        return 0
     fi
+    # Use temp file to avoid file-busy errors
+    cp "$UI_CONF" /tmp/_ui.conf.bak
+    sed '1s|^|env LD_PRELOAD=/usr/local/bin/minioverride.so\n|' /tmp/_ui.conf.bak > /tmp/_ui.conf.new
+    cp /tmp/_ui.conf.new "$UI_CONF"
+    rm -f /tmp/_ui.conf.bak /tmp/_ui.conf.new
+    echo -e "${G}    Patched ui.conf — reboot required for sudo fix.${N}"
+    NEEDS_REBOOT=1
+}
 
-    # Patch ui.conf — add LD_PRELOAD line if not already there
-    if [[ -f "$UI_CONF" ]]; then
-        if ! grep -q "minioverride" "$UI_CONF"; then
-            # Use a temp file to avoid "text file busy" on ui.conf
-            cp "$UI_CONF" /tmp/ui.conf.tmp
-            sed -i '1s|^|env LD_PRELOAD=/usr/local/bin/minioverride.so\n|' /tmp/ui.conf.tmp
-            cp /tmp/ui.conf.tmp "$UI_CONF"
-            rm -f /tmp/ui.conf.tmp
-            echo -e "${GRN}    Patched ${UI_CONF} — reboot required.${RST}"
-            NEEDS_REBOOT=1
-        else
-            echo -e "${DIM}    ui.conf already patched.${RST}"
-        fi
+install_minioverride() {
+    echo -e "${D}    Building minioverride.so (sudo/NO_NEW_PRIVS fix)...${N}"
+    if build_minioverride; then
+        echo -e "${G}    minioverride.so built.${N}"
+        patch_ui_conf
     else
-        echo -e "${YLW}    ${UI_CONF} not found.${RST}"
+        echo -e "${Y}    [!] minioverride build failed. Sudo may not work until repaired.${N}"
+        OVERRIDE_FAILED=1
     fi
 }
 
 remove_minioverride() {
-    if [[ -f "$UI_CONF" ]] && grep -q "minioverride" "$UI_CONF"; then
-        cp "$UI_CONF" /tmp/ui.conf.tmp
-        sed -i '/minioverride/d' /tmp/ui.conf.tmp
-        cp /tmp/ui.conf.tmp "$UI_CONF"
-        rm -f /tmp/ui.conf.tmp
-        echo -e "${GRN}[+] Removed minioverride from ${UI_CONF}${RST}"
+    if [[ -f "$UI_CONF" ]] && grep -q "minioverride" "$UI_CONF" 2>/dev/null; then
+        cp "$UI_CONF" /tmp/_ui.conf.bak
+        grep -v "minioverride" /tmp/_ui.conf.bak > /tmp/_ui.conf.new
+        cp /tmp/_ui.conf.new "$UI_CONF"
+        rm -f /tmp/_ui.conf.bak /tmp/_ui.conf.new
+        echo -e "${G}[+] Removed minioverride from ui.conf${N}"
     fi
     rm -f "$OVERRIDE_SO"
-    echo -e "${GRN}[+] Removed ${OVERRIDE_SO}${RST}"
+    echo -e "${G}[+] Removed minioverride.so${N}"
 }
 
-# ─────────────────────────────────────────
-#  INSTALL
-# ─────────────────────────────────────────
+# ── Powerwash-persistence setup ──────────────────────────────────
+# Strategy: store cshell on rootfs (/usr/bin/cshell_rootfs) and
+# install an upstart job that re-installs to /usr/local after each boot.
+# Rootfs survives powerwash; stateful /usr/local does not.
+install_persistence() {
+    echo -e "${D}    Setting up powerwash persistence...${N}"
+
+    # Copy cshell itself to rootfs path
+    cp "$SHELL_PATH" "$ROOTFS_SHELL" 2>/dev/null
+    chmod +x "$ROOTFS_SHELL"
+
+    # Write upstart job on rootfs that restores cshell after every boot
+    cat > "$INIT_SCRIPT" << 'UPSTART'
+# cshell-restore — restores cshell to /usr/local after powerwash
+description "cshell post-boot restore"
+start on started system-services
+task
+script
+    if [ ! -f /usr/local/bin/cshell ]; then
+        mkdir -p /usr/local/bin
+        cp /usr/bin/cshell_rootfs /usr/local/bin/cshell
+        chmod +x /usr/local/bin/cshell
+    fi
+    # Restore crosh stub if missing
+    if ! grep -q "cshell" /usr/bin/crosh 2>/dev/null; then
+        printf '#!/bin/bash\nexec sudo /usr/local/bin/cshell\n' > /usr/bin/crosh
+        chmod +x /usr/bin/crosh
+    fi
+    # Restore minioverride if missing
+    if [ ! -f /usr/local/bin/minioverride.so ] && [ -f /usr/bin/minioverride.so ]; then
+        cp /usr/bin/minioverride.so /usr/local/bin/minioverride.so
+        chmod 755 /usr/local/bin/minioverride.so
+    fi
+end script
+UPSTART
+
+    # Also copy minioverride to rootfs for the upstart job to use
+    [[ -f "$OVERRIDE_SO" ]] && cp "$OVERRIDE_SO" /usr/bin/minioverride.so 2>/dev/null
+
+    echo -e "${G}    Powerwash persistence installed (upstart job + rootfs copy).${N}"
+}
+
+remove_persistence() {
+    rm -f "$ROOTFS_SHELL" "$INIT_SCRIPT" /usr/bin/minioverride.so
+    echo -e "${G}[+] Persistence hooks removed.${N}"
+}
+
+# ── INSTALL ──────────────────────────────────────────────────────
 do_install() {
     banner
-    echo -e "${YLW}[*] Installing cshell...${RST}\n"
-    [[ "$(id -u)" -ne 0 ]] && echo -e "${RED}[!] Run as root.${RST}" && exit 1
+    echo -e "${Y}[*] Installing cshell v${VERSION}...${N}\n"
+    [[ "$(id -u)" -ne 0 ]] && echo -e "${R}[!] Must be root.${N}" && exit 1
 
-    echo -e "${DIM}    Checking rootfs...${RST}"
+    echo -e "${D}    Checking rootfs...${N}"
     check_rootfs
     mkdir -p /usr/local/bin
 
-    # Download cshell
-    echo -e "${DIM}    Downloading cshell to ${SHELL_PATH}...${RST}"
-    if curl -sSL "$SCRIPT_URL" -o "$SHELL_PATH" 2>/dev/null && [[ -s "$SHELL_PATH" ]]; then
+    # Download/copy cshell
+    echo -e "${D}    Obtaining cshell script...${N}"
+    local got=0
+    if curl -sSfL "$SCRIPT_URL" -o "$SHELL_PATH" 2>/dev/null && [[ -s "$SHELL_PATH" ]]; then
         chmod +x "$SHELL_PATH"
-        echo -e "${GRN}    Downloaded to ${SHELL_PATH}${RST}"
-    elif [[ -f "${BASH_SOURCE[0]}" && "${BASH_SOURCE[0]}" != "/dev/stdin" && \
-            "${BASH_SOURCE[0]}" != "bash" ]]; then
-        cp "${BASH_SOURCE[0]}" "$SHELL_PATH" && chmod +x "$SHELL_PATH"
-        echo -e "${GRN}    Copied from source to ${SHELL_PATH}${RST}"
-    else
-        echo -e "${RED}[!] Could not obtain cshell script. Check your SCRIPT_URL.${RST}"; exit 1
+        echo -e "${G}    Downloaded to ${SHELL_PATH}${N}"
+        got=1
     fi
-    [[ ! -x "$SHELL_PATH" ]] && echo -e "${RED}[!] Install failed.${RST}" && exit 1
+    if [[ $got -eq 0 ]]; then
+        local src="${BASH_SOURCE[0]:-$0}"
+        if [[ -f "$src" && "$src" != "/dev/stdin" && "$src" != "bash" ]]; then
+            cp "$src" "$SHELL_PATH" && chmod +x "$SHELL_PATH"
+            echo -e "${G}    Copied from ${src}${N}"
+            got=1
+        fi
+    fi
+    if [[ $got -eq 0 ]]; then
+        echo -e "${R}[!] Could not obtain script. Set SCRIPT_URL at top of file.${N}"
+        exit 1
+    fi
 
     NEEDS_REBOOT=0
     OVERRIDE_FAILED=0
+
     install_minioverride
+    install_persistence
 
-    # Backup crosh
+    # Backup + replace crosh (rm first to avoid text-file-busy)
     if [[ ! -f "$CROSH_BACKUP" ]]; then
-        echo -e "${DIM}    Backing up original crosh...${RST}"
-        cp "$CROSH_PATH" "$CROSH_BACKUP" && echo -e "${GRN}    Backed up to ${CROSH_BACKUP}${RST}"
-    else
-        echo -e "${DIM}    Crosh backup already exists.${RST}"
+        echo -e "${D}    Backing up crosh...${N}"
+        cp "$CROSH_PATH" "$CROSH_BACKUP"
+        echo -e "${G}    Backed up to ${CROSH_BACKUP}${N}"
     fi
-
-    # FIX: "Text file busy" — crosh may be the currently running executable.
-    # We can't overwrite an in-use binary directly.
-    # Solution: remove it first (unlink), then write the new file.
-    echo -e "${DIM}    Writing crosh stub...${RST}"
-    rm -f "$CROSH_PATH" 2>/dev/null
-    cat > "$CROSH_PATH" << 'STUB'
-#!/bin/bash
-exec sudo /usr/local/bin/cshell
-STUB
+    echo -e "${D}    Writing crosh stub...${N}"
+    rm -f "$CROSH_PATH"
+    printf '#!/bin/bash\nexec sudo /usr/local/bin/cshell\n' > "$CROSH_PATH"
     chmod +x "$CROSH_PATH"
-    echo -e "${GRN}    Crosh stub installed.${RST}"
+    echo -e "${G}    Crosh stub installed.${N}"
 
     echo ""
-    echo -e "${GRN}[+] cshell installed!${RST}"
+    echo -e "${G}[+] cshell installed!${N}"
+
+    if [[ $OVERRIDE_FAILED -eq 1 ]]; then
+        echo -e "${Y}[!] minioverride failed — use 'Repair sudo' from the shell menu.${N}"
+    fi
     if [[ $NEEDS_REBOOT -eq 1 ]]; then
-        echo -e "${YLW}[!] REBOOT REQUIRED for sudo fix to take effect.${RST}"
+        echo -e "${Y}[!] REBOOT REQUIRED for sudo fix.${N}"
         echo -e "    After reboot, open crosh (Ctrl+Alt+T) to launch cshell.\n"
-        echo -ne "  Reboot now? [y/N]: "
-        local rb; tty_read rb
-        [[ "$rb" =~ ^[Yy]$ ]] && reboot
-    elif [[ $OVERRIDE_FAILED -eq 1 ]]; then
-        echo -e "${YLW}[!] minioverride failed — sudo may not work yet.${RST}"
-        echo -e "    Run 'Repair sudo' from the cshell main menu after opening crosh.\n"
+        if confirm_yn "Reboot now?"; then reboot; fi
     else
         echo -e "    Open crosh (Ctrl+Alt+T) to launch.\n"
     fi
-    echo -ne "  ${DIM}Press any key to exit...${RST}"
-    read -rsn1 </dev/tty 2>/dev/null || read -rsn1
+
+    echo -ne "\n  ${D}Press any key to exit...${N}"
+    tread1 _; echo ""
     exit 0
 }
 
-# ─────────────────────────────────────────
-#  DELETE
-# ─────────────────────────────────────────
+# ── DELETE ───────────────────────────────────────────────────────
 do_delete() {
     banner
-    echo -e "${YLW}[*] Deleting cshell...${RST}\n"
+    echo -e "${Y}[*] Deleting cshell...${N}\n"
     [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" --delete
     remount_rw
     remove_minioverride
-    rm -f "$SHELL_PATH" && echo -e "${GRN}[+] Removed ${SHELL_PATH}${RST}" \
-        || echo -e "${YLW}[!] ${SHELL_PATH} not found.${RST}"
-    echo -e "  ${DIM}Use 'Restore crosh to factory' if crosh needs fixing too.${RST}\n"
-    echo -ne "  ${DIM}Press any key to exit...${RST}"
-    read -rsn1 </dev/tty 2>/dev/null || read -rsn1; exit 0
+    remove_persistence
+    rm -f "$SHELL_PATH"
+    echo -e "${G}[+] Removed ${SHELL_PATH}${N}"
+    echo -e "${D}    Use 'Restore crosh' to fix crosh if needed.${N}\n"
+    echo -ne "  ${D}Press any key to exit...${N}"
+    tread1 _; echo ""
+    exit 0
 }
 
-# ─────────────────────────────────────────
-#  RESTORE CROSH
-# ─────────────────────────────────────────
+# ── RESTORE CROSH ────────────────────────────────────────────────
 do_restore_crosh() {
     banner
-    echo -e "${YLW}[*] Restoring crosh to factory...${RST}\n"
+    echo -e "${Y}[*] Restoring crosh to factory...${N}\n"
     [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" --restore
     remount_rw
     if [[ -f "$CROSH_BACKUP" ]]; then
-        rm -f "$CROSH_PATH"          # unlink first — avoids text file busy
-        cp "$CROSH_BACKUP" "$CROSH_PATH" && chmod +x "$CROSH_PATH"
+        rm -f "$CROSH_PATH"
+        cp "$CROSH_BACKUP" "$CROSH_PATH"
+        chmod +x "$CROSH_PATH"
         rm -f "$CROSH_BACKUP"
-        echo -e "${GRN}[+] Original crosh restored.${RST}"
+        echo -e "${G}[+] Original crosh restored.${N}"
     else
-        echo -e "${RED}[!] No backup found. Recovery: Esc+Refresh+Power${RST}"
+        echo -e "${R}[!] No backup found at ${CROSH_BACKUP}.${N}"
+        echo -e "    If crosh is broken: Esc+Refresh+Power → Recovery Mode"
     fi
-    echo -ne "\n  ${DIM}Press any key to exit...${RST}"
-    read -rsn1 </dev/tty 2>/dev/null || read -rsn1; exit 0
+    echo -ne "\n  ${D}Press any key to exit...${N}"
+    tread1 _; echo ""
+    exit 0
 }
 
-# ═════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 #  SHELL PAGES
-# ═════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 
-page_sysinfo() {
+pg_sysinfo() {
     banner
-    echo -e "  ${WHT}── System Info ──────────────────────────────────────${RST}\n"
+    echo -e "  ${W}── System Info ──────────────────────────────────────${N}\n"
     local board=$(grep CHROMEOS_RELEASE_BOARD /etc/lsb-release 2>/dev/null | cut -d= -f2)
-    local version=$(grep CHROMEOS_RELEASE_VERSION /etc/lsb-release 2>/dev/null | cut -d= -f2)
-    local channel=$(grep CHROMEOS_RELEASE_TRACK /etc/lsb-release 2>/dev/null | cut -d= -f2)
+    local ver=$(grep CHROMEOS_RELEASE_VERSION /etc/lsb-release 2>/dev/null | cut -d= -f2)
+    local chan=$(grep CHROMEOS_RELEASE_TRACK /etc/lsb-release 2>/dev/null | cut -d= -f2)
     local build=$(grep CHROMEOS_RELEASE_BUILD_NUMBER /etc/lsb-release 2>/dev/null | cut -d= -f2)
     local cpu=$(grep "model name" /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs)
     local cores=$(grep -c "^processor" /proc/cpuinfo 2>/dev/null)
-    local mem_total=$(awk '/MemTotal/{printf "%.1f GB",$2/1024/1024}' /proc/meminfo)
-    local mem_free=$(awk '/MemAvailable/{printf "%.1f GB",$2/1024/1024}' /proc/meminfo)
-    local mem_used=$(awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{printf "%.1f GB",(t-a)/1024/1024}' /proc/meminfo)
-    local arch=$(uname -m)
-    local swap_total=$(awk '/SwapTotal/{printf "%.0f MB",$2/1024}' /proc/meminfo)
-    local swap_free=$(awk '/SwapFree/{printf "%.0f MB",$2/1024}' /proc/meminfo)
-
-    echo -e "  ${CYN}Board:${RST}        ${board:-unknown}"
-    echo -e "  ${CYN}CrOS Version:${RST} ${version:-unknown}  (${channel:-unknown})"
-    echo -e "  ${CYN}Build:${RST}        ${build:-unknown}"
-    echo -e "  ${CYN}Kernel:${RST}       $(uname -r) [${arch}]"
-    echo -e "  ${CYN}CPU:${RST}          ${cpu:-unknown}"
-    echo -e "  ${CYN}Cores:${RST}        ${cores}"
-    echo -e "  ${CYN}RAM:${RST}          ${mem_used} used / ${mem_free} free / ${mem_total} total"
-    echo -e "  ${CYN}Swap:${RST}         ${swap_free} free / ${swap_total} total"
-    echo -e "  ${CYN}Uptime:${RST}       $(uptime -p 2>/dev/null || uptime)"
-    echo -e "  ${CYN}Hostname:${RST}     $(hostname)"
-    echo -e "  ${CYN}User:${RST}         $(whoami) (uid=$(id -u) gid=$(id -g))"
-    echo -e "  ${CYN}minioverride:${RST} $([[ -f "$OVERRIDE_SO" ]] && echo "${GRN}installed${RST}" || echo "${YLW}missing${RST}")"
-    echo -e "  ${CYN}ui.conf patch:${RST} $([[ -f "$UI_CONF" ]] && grep -q minioverride "$UI_CONF" && echo "${GRN}active${RST}" || echo "${YLW}not active${RST}")"
+    local mt=$(awk '/MemTotal/{printf "%.1f GB",$2/1024/1024}' /proc/meminfo)
+    local mf=$(awk '/MemAvailable/{printf "%.1f GB",$2/1024/1024}' /proc/meminfo)
+    local mu=$(awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{printf "%.1f GB",(t-a)/1024/1024}' /proc/meminfo)
+    local st=$(awk '/SwapTotal/{printf "%.0f MB",$2/1024}' /proc/meminfo)
+    echo -e "  ${C}Board:${N}         ${board:-unknown}"
+    echo -e "  ${C}Version:${N}       ${ver:-?}  (${chan:-?})"
+    echo -e "  ${C}Build:${N}         ${build:-?}"
+    echo -e "  ${C}Kernel:${N}        $(uname -r) [$(uname -m)]"
+    echo -e "  ${C}CPU:${N}           ${cpu:-?} (${cores} cores)"
+    echo -e "  ${C}RAM:${N}           ${mu} used / ${mf} free / ${mt} total"
+    echo -e "  ${C}Swap:${N}          ${st}"
+    echo -e "  ${C}Uptime:${N}        $(uptime -p 2>/dev/null || uptime)"
+    echo -e "  ${C}Hostname:${N}      $(hostname)"
+    echo -e "  ${C}Running as:${N}    $(whoami) uid=$(id -u)"
+    echo -e "  ${C}minioverride:${N}  $([[ -f $OVERRIDE_SO ]] && echo "${G}installed${N}" || echo "${Y}missing${N}")"
+    echo -e "  ${C}ui.conf patch:${N} $(grep -q minioverride $UI_CONF 2>/dev/null && echo "${G}active${N}" || echo "${Y}inactive${N}")"
+    echo -e "  ${C}persistence:${N}   $([[ -f $INIT_SCRIPT ]] && echo "${G}installed${N}" || echo "${Y}not installed${N}")"
     pause_key
 }
 
-page_battery() {
+pg_battery() {
     banner
-    echo -e "  ${WHT}── Battery Health ───────────────────────────────────${RST}\n"
+    echo -e "  ${W}── Battery Health ───────────────────────────────────${N}\n"
     local bat=""
     for p in /sys/class/power_supply/BAT* /sys/class/power_supply/BATC /sys/class/power_supply/bq*; do
         [[ -d "$p" ]] && bat="$p" && break
     done
-
     if [[ -n "$bat" ]]; then
-        local status=$(cat "$bat/status" 2>/dev/null || echo "unknown")
+        local status=$(cat "$bat/status" 2>/dev/null || echo "?")
         local cap=$(cat "$bat/capacity" 2>/dev/null || echo "?")
         local efull=$(cat "$bat/energy_full" 2>/dev/null)
         local edesign=$(cat "$bat/energy_full_design" 2>/dev/null)
@@ -424,206 +419,113 @@ page_battery() {
         local mfr=$(cat "$bat/manufacturer" 2>/dev/null)
         local model=$(cat "$bat/model_name" 2>/dev/null)
         local tech=$(cat "$bat/technology" 2>/dev/null)
-
-        echo -e "  ${CYN}Status:${RST}       $status"
-        echo -e "  ${CYN}Charge:${RST}       ${cap}%"
-        [[ -n "$mfr" ]]    && echo -e "  ${CYN}Manufacturer:${RST} $mfr"
-        [[ -n "$model" ]]  && echo -e "  ${CYN}Model:${RST}        $model"
-        [[ -n "$tech" ]]   && echo -e "  ${CYN}Technology:${RST}   $tech"
-        [[ -n "$cycles" ]] && echo -e "  ${CYN}Cycles:${RST}       $cycles"
+        echo -e "  ${C}Status:${N}       $status"
+        echo -e "  ${C}Charge:${N}       ${cap}%"
+        [[ -n "$mfr" ]]    && echo -e "  ${C}Manufacturer:${N} $mfr"
+        [[ -n "$model" ]]  && echo -e "  ${C}Model:${N}        $model"
+        [[ -n "$tech" ]]   && echo -e "  ${C}Technology:${N}   $tech"
+        [[ -n "$cycles" && "$cycles" != "0" ]] && echo -e "  ${C}Cycles:${N}       $cycles"
         if [[ -n "$efull" && -n "$edesign" && "$edesign" -gt 0 ]]; then
-            local health=$(awk "BEGIN{printf \"%.1f\",($efull/$edesign)*100}")
-            # Color health by level
-            local hcolor=$GRN
-            (( $(echo "$health < 80" | bc -l 2>/dev/null) )) && hcolor=$YLW
-            (( $(echo "$health < 60" | bc -l 2>/dev/null) )) && hcolor=$RED
-            echo -e "  ${CYN}Health:${RST}       ${hcolor}${health}%${RST} of design capacity"
-            [[ -n "$enow" ]] && echo -e "  ${CYN}Now:${RST}          $(awk "BEGIN{printf \"%.2f Wh\",$enow/1000000}")"
-            echo -e "  ${CYN}Full cap:${RST}     $(awk "BEGIN{printf \"%.2f Wh\",$efull/1000000}")"
-            echo -e "  ${CYN}Design cap:${RST}   $(awk "BEGIN{printf \"%.2f Wh\",$edesign/1000000}")"
+            local h=$(awk "BEGIN{printf \"%.1f\",($efull/$edesign)*100}")
+            local hc=$G
+            awk "BEGIN{exit !($h < 80)}" && hc=$Y
+            awk "BEGIN{exit !($h < 60)}" && hc=$R
+            echo -e "  ${C}Health:${N}       ${hc}${h}%${N}"
+            [[ -n "$enow" ]] && echo -e "  ${C}Current:${N}      $(awk "BEGIN{printf \"%.2f Wh\",$enow/1000000}")"
+            echo -e "  ${C}Full cap:${N}     $(awk "BEGIN{printf \"%.2f Wh\",$efull/1000000}")"
+            echo -e "  ${C}Design cap:${N}   $(awk "BEGIN{printf \"%.2f Wh\",$edesign/1000000}")"
         fi
-        [[ -n "$voltage" ]] && echo -e "  ${CYN}Voltage:${RST}      $(awk "BEGIN{printf \"%.3f V\",$voltage/1000000}")"
-        [[ -n "$current" ]] && echo -e "  ${CYN}Current:${RST}      $(awk "BEGIN{printf \"%.0f mA\",$current/1000}")"
+        [[ -n "$voltage" ]] && echo -e "  ${C}Voltage:${N}      $(awk "BEGIN{printf \"%.3f V\",$voltage/1000000}")"
+        [[ -n "$current" ]] && echo -e "  ${C}Draw:${N}         $(awk "BEGIN{printf \"%.0f mA\",$current/1000}")"
     fi
-
-    # ectool as supplement
     if command -v ectool &>/dev/null; then
-        echo -e "\n  ${DIM}ectool batterystatus:${RST}"
+        echo -e "\n  ${D}ectool:${N}"
         ectool batterystatus 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
     fi
     pause_key
 }
 
-page_sensors() {
+pg_sensors() {
     banner
-    echo -e "  ${WHT}── Sensors / Temperature ────────────────────────────${RST}\n"
+    echo -e "  ${W}── Sensors / Temperature ────────────────────────────${N}\n"
     local found=0
     for f in /sys/class/thermal/thermal_zone*/temp; do
         [[ -f "$f" ]] || continue
         local zone=$(echo "$f" | grep -o 'zone[0-9]*')
-        local type=$(cat "$(dirname $f)/type" 2>/dev/null || echo "unknown")
+        local type=$(cat "$(dirname $f)/type" 2>/dev/null || echo "?")
         local raw=$(cat "$f" 2>/dev/null || echo "0")
-        local temp=$(awk "BEGIN{printf \"%.1f\", $raw/1000}")
-        # Color by temp
-        local tcolor=$GRN
-        (( raw > 70000 )) && tcolor=$YLW
-        (( raw > 85000 )) && tcolor=$RED
-        printf "  ${CYN}%-10s${RST} %-28s ${tcolor}%s°C${RST}\n" "$zone" "($type)" "$temp"
+        local tc=$G
+        (( raw > 70000 )) && tc=$Y
+        (( raw > 85000 )) && tc=$R
+        printf "  ${C}%-10s${N} %-24s ${tc}%.1f°C${N}\n" "$zone" "($type)" "$(awk "BEGIN{print $raw/1000}")"
         found=1
     done
     [[ $found -eq 0 ]] && echo "  No thermal zones found."
-
     if command -v ectool &>/dev/null; then
-        echo -e "\n  ${DIM}Fan RPM:${RST}"
+        echo -e "\n  ${D}Fan RPM:${N}"
         ectool pwmgetfanrpm 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
-        echo -e "\n  ${DIM}ectool temps:${RST}"
+        echo -e "\n  ${D}EC temps:${N}"
         ectool temps all 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
     fi
     pause_key
 }
 
-page_devmode() {
+pg_devmode() {
     banner
-    echo -e "  ${WHT}── Dev Mode / Boot Flags ────────────────────────────${RST}\n"
+    echo -e "  ${W}── Dev Mode / Boot Flags ────────────────────────────${N}\n"
     if command -v crossystem &>/dev/null; then
-        # Key flags first
-        echo -e "  ${WHT}Key flags:${RST}"
+        echo -e "  ${W}Key flags:${N}"
         for key in devsw_boot dev_boot_usb dev_boot_signed_only dev_boot_legacy wpsw_cur; do
             local val=$(crossystem $key 2>/dev/null || echo "n/a")
-            # Color 1=enabled green, 0=disabled dim
-            local vc=$DIM
-            [[ "$val" == "1" ]] && vc=$GRN
-            printf "  ${CYN}%-30s${RST} ${vc}%s${RST}\n" "$key" "$val"
+            local vc=$D
+            [[ "$val" == "1" ]] && vc=$G
+            printf "  ${C}%-32s${N} ${vc}%s${N}\n" "$key" "$val"
         done
-        echo ""
-        echo -e "  ${WHT}Firmware:${RST}"
+        echo -e "\n  ${W}Firmware:${N}"
         for key in fwid ro_fwid mainfw_act mainfw_type; do
-            printf "  ${CYN}%-30s${RST} %s\n" "$key" "$(crossystem $key 2>/dev/null || echo n/a)"
+            printf "  ${C}%-32s${N} %s\n" "$key" "$(crossystem $key 2>/dev/null || echo n/a)"
         done
-        echo ""
-        echo -e "  ${DIM}Press B for full crossystem dump, any other key to go back...${RST}"
-        IFS= read -rsn1 kk
-        if [[ "$kk" == "b" || "$kk" == "B" ]]; then
+        echo -e "\n  ${D}[B] Full dump  [any] Back${N}"
+        local k; tread1 k
+        if [[ "$k" == "b" || "$k" == "B" ]]; then
             banner
-            echo -e "  ${WHT}── Full crossystem ──────────────────────────────────${RST}\n"
+            echo -e "  ${W}── Full crossystem ──────────────────────────────────${N}\n"
             crossystem 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
             pause_key
         fi
     else
-        echo "  crossystem not available."; pause_key
-    fi
-}
-
-page_net() {
-    banner
-    echo -e "  ${WHT}── Network ──────────────────────────────────────────${RST}\n"
-    echo -e "  ${WHT}Interfaces:${RST}"
-    ip -br addr show 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
-    echo -e "\n  ${WHT}Routes:${RST}"
-    ip route 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
-    echo -e "\n  ${WHT}DNS servers:${RST}"
-    grep "^nameserver" /etc/resolv.conf 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
-    echo -e "\n  ${DIM}Press P to ping 8.8.8.8, any other key to go back...${RST}"
-    IFS= read -rsn1 kk
-    if [[ "$kk" == "p" || "$kk" == "P" ]]; then
-        banner
-        echo -e "  ${YLW}Pinging 8.8.8.8 (4 packets)...${RST}\n"
-        ping -c 4 8.8.8.8 2>&1 | while IFS= read -r l; do echo "  $l"; done
+        echo "  crossystem not available."
         pause_key
     fi
 }
 
-page_wifi() {
+pg_gbb() {
     banner
-    echo -e "  ${WHT}── WiFi Info ────────────────────────────────────────${RST}\n"
-    # Try iw first
-    if command -v iw &>/dev/null; then
-        echo -e "  ${WHT}Connected network:${RST}"
-        iw dev 2>/dev/null | grep -A5 "Interface\|ssid\|freq\|signal" | while IFS= read -r l; do echo "  $l"; done
-        echo -e "\n  ${WHT}Nearby networks:${RST}"
-        iw dev wlan0 scan 2>/dev/null | grep "SSID:\|signal:\|freq:" | while IFS= read -r l; do echo "  $l"; done
+    echo -e "  ${W}── GBB Flags ────────────────────────────────────────${N}\n"
+    if command -v futility &>/dev/null; then
+        echo -e "  ${D}Current GBB flags:${N}"
+        futility gbb --get --flags 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
     else
-        echo "  iw not available."
+        echo "  futility not found."
     fi
+    echo -e "\n  ${W}Reference:${N}"
+    echo -e "  ${C}0x0001${N}  DEV_SCREEN_SHORT_DELAY"
+    echo -e "  ${C}0x0002${N}  LOAD_OPTION_READONLY"
+    echo -e "  ${C}0x0008${N}  FORCE_DEV_SWITCH_ON (skip dev mode beep)"
+    echo -e "  ${C}0x0010${N}  DISABLE_DEV_REQUEST (can't leave dev mode)"
+    echo -e "  ${C}0x0020${N}  DISABLE_FW_ROLLBACK_CHECK"
+    echo -e "  ${C}0x8000${N}  CCD_UNLOCK"
+    echo -e "  ${C}0x8090${N}  Common murkmod/fakemurk value"
     pause_key
 }
 
-page_storage() {
+pg_vpd() {
     banner
-    echo -e "  ${WHT}── Storage ──────────────────────────────────────────${RST}\n"
-    echo -e "  ${WHT}Disk usage:${RST}"
-    df -h 2>/dev/null | grep -v "^tmpfs\|^devtmpfs\|^udev\|^overlay\|^shm" | \
-        while IFS= read -r l; do echo "  $l"; done
-    echo -e "\n  ${WHT}Block devices:${RST}"
-    lsblk -o NAME,SIZE,TYPE,MOUNTPOINT 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
-    echo -e "\n  ${WHT}Stateful partition:${RST}"
-    df -h /mnt/stateful_partition 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
-    pause_key
-}
-
-page_procs() {
-    banner
-    echo -e "  ${WHT}── Processes ────────────────────────────────────────${RST}\n"
-    echo -e "  ${DIM}Top 20 by CPU:${RST}\n"
-    ps aux --sort=-%cpu 2>/dev/null | head -21 | while IFS= read -r l; do echo "  $l"; done
-    echo -e "\n  ${DIM}Press M to sort by memory instead, any other key to go back...${RST}"
-    IFS= read -rsn1 kk
-    if [[ "$kk" == "m" || "$kk" == "M" ]]; then
-        banner
-        echo -e "  ${WHT}── Processes (by Memory) ────────────────────────────${RST}\n"
-        ps aux --sort=-%mem 2>/dev/null | head -21 | while IFS= read -r l; do echo "  $l"; done
-        pause_key
-    fi
-}
-
-page_memory() {
-    banner
-    echo -e "  ${WHT}── Memory Details ───────────────────────────────────${RST}\n"
-    cat /proc/meminfo 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
-    pause_key
-}
-
-page_extensions() {
-    banner
-    echo -e "  ${WHT}── Chrome Extensions ────────────────────────────────${RST}\n"
-    local dir="/home/chronos/user/Extensions"
-    if [[ ! -d "$dir" ]]; then
-        echo "  Not found: $dir"
-        # Try to find it
-        local alt=$(find /home/chronos -name "Extensions" -type d 2>/dev/null | head -1)
-        [[ -n "$alt" ]] && dir="$alt" && echo "  Found at: $alt" || { pause_key; return; }
-    fi
-    local n=0
-    printf "  ${WHT}%-26s %-45s %s${RST}\n" "Extension ID" "Name" "Version"
-    echo "  $(printf '%.0s─' {1..70})"
-    for id_dir in "$dir"/*/; do
-        local id=$(basename "$id_dir")
-        # Find manifest in latest version folder
-        local mf=$(find "$id_dir" -name "manifest.json" -not -path "*/node_modules/*" 2>/dev/null \
-            | sort -V | tail -1)
-        local name="unknown" ver=""
-        if [[ -n "$mf" ]]; then
-            name=$(python3 -c "import json,sys; d=json.load(open('$mf')); print(d.get('name','unknown')[:44])" 2>/dev/null \
-                || grep '"name"' "$mf" 2>/dev/null | head -1 \
-                    | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/' | cut -c1-44)
-            ver=$(python3 -c "import json,sys; d=json.load(open('$mf')); print(d.get('version',''))" 2>/dev/null \
-                || grep '"version"' "$mf" 2>/dev/null | head -1 \
-                    | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/')
-        fi
-        printf "  ${DIM}%-26s${RST} %-45s ${DIM}%s${RST}\n" "${id:0:26}" "${name:0:44}" "$ver"
-        ((n++))
-    done
-    echo -e "\n  ${DIM}${n} extension(s) found${RST}"
-    pause_key
-}
-
-page_vpd() {
-    banner
-    echo -e "  ${WHT}── VPD (Vital Product Data) ─────────────────────────${RST}\n"
+    echo -e "  ${W}── VPD (Vital Product Data) ─────────────────────────${N}\n"
     if command -v vpd &>/dev/null; then
-        echo -e "  ${WHT}RO VPD:${RST}"
+        echo -e "  ${W}RO VPD:${N}"
         vpd -l 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
-        echo -e "\n  ${WHT}RW VPD:${RST}"
+        echo -e "\n  ${W}RW VPD:${N}"
         vpd -i RW_VPD -l 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
     else
         echo "  vpd tool not available."
@@ -631,49 +533,202 @@ page_vpd() {
     pause_key
 }
 
-page_usb() {
+pg_net() {
     banner
-    echo -e "  ${WHT}── USB Devices ──────────────────────────────────────${RST}\n"
+    echo -e "  ${W}── Network ──────────────────────────────────────────${N}\n"
+    echo -e "  ${W}Interfaces:${N}"
+    ip -br addr show 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+    echo -e "\n  ${W}Routes:${N}"
+    ip route 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+    echo -e "\n  ${W}DNS:${N}"
+    grep "^nameserver" /etc/resolv.conf 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+    echo -e "\n  ${D}[P] Ping 8.8.8.8  [T] Traceroute  [any] Back${N}"
+    local k; tread1 k
+    case "$k" in
+        p|P)
+            banner
+            echo -e "  ${Y}Pinging 8.8.8.8...${N}\n"
+            ping -c 4 8.8.8.8 2>&1 | while IFS= read -r l; do echo "  $l"; done
+            pause_key ;;
+        t|T)
+            banner
+            echo -e "  ${Y}Traceroute to 8.8.8.8...${N}\n"
+            traceroute 8.8.8.8 2>&1 | while IFS= read -r l; do echo "  $l"; done
+            pause_key ;;
+    esac
+}
+
+pg_wifi() {
+    banner
+    echo -e "  ${W}── WiFi ─────────────────────────────────────────────${N}\n"
+    if command -v iw &>/dev/null; then
+        local iface=$(iw dev 2>/dev/null | grep Interface | awk '{print $2}' | head -1)
+        echo -e "  ${W}Interface: ${iface:-unknown}${N}\n"
+        if [[ -n "$iface" ]]; then
+            echo -e "  ${D}Connected:${N}"
+            iw dev "$iface" link 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+            echo -e "\n  ${D}Station info:${N}"
+            iw dev "$iface" station dump 2>/dev/null | grep "signal\|tx bitrate\|rx bitrate\|inactive" \
+                | while IFS= read -r l; do echo "  $l"; done
+        fi
+    else
+        echo "  iw not available."
+    fi
+    # flimflam/shill may have more info
+    if command -v connmanctl &>/dev/null; then
+        echo -e "\n  ${D}connmanctl services:${N}"
+        connmanctl services 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+    fi
+    pause_key
+}
+
+pg_storage() {
+    banner
+    echo -e "  ${W}── Storage ──────────────────────────────────────────${N}\n"
+    echo -e "  ${W}Filesystem usage:${N}"
+    df -h 2>/dev/null | grep -v "^tmpfs\|^devtmpfs\|^udev\|^overlay\|^shm\|^none" \
+        | while IFS= read -r l; do echo "  $l"; done
+    echo -e "\n  ${W}Block devices:${N}"
+    lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT 2>/dev/null \
+        | while IFS= read -r l; do echo "  $l"; done
+    echo -e "\n  ${W}Stateful partition:${N}"
+    df -h /mnt/stateful_partition 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+    pause_key
+}
+
+pg_memory() {
+    banner
+    echo -e "  ${W}── Memory ───────────────────────────────────────────${N}\n"
+    cat /proc/meminfo 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+    pause_key
+}
+
+pg_procs() {
+    banner
+    echo -e "  ${W}── Processes ────────────────────────────────────────${N}\n"
+    echo -e "  ${D}[C] CPU sort  [M] Mem sort  — currently showing CPU${N}\n"
+    ps aux --sort=-%cpu 2>/dev/null | head -22 | while IFS= read -r l; do echo "  $l"; done
+    echo -e "\n  ${D}[M] Sort by mem  [K] Kill PID  [any] Back${N}"
+    local k; tread1 k
+    case "$k" in
+        m|M)
+            banner
+            echo -e "  ${W}── Processes (Memory) ───────────────────────────────${N}\n"
+            ps aux --sort=-%mem 2>/dev/null | head -22 | while IFS= read -r l; do echo "  $l"; done
+            pause_key ;;
+        k|K)
+            echo -ne "\n  ${Y}PID to kill:${N} "
+            local pid; tread pid
+            if [[ "$pid" =~ ^[0-9]+$ ]]; then
+                kill -9 "$pid" 2>/dev/null && echo -e "  ${G}Killed PID $pid${N}" \
+                    || echo -e "  ${R}Failed to kill $pid${N}"
+            fi
+            pause_key ;;
+    esac
+}
+
+pg_usb() {
+    banner
+    echo -e "  ${W}── USB Devices ──────────────────────────────────────${N}\n"
     if command -v lsusb &>/dev/null; then
         lsusb 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
     else
         for dev in /sys/bus/usb/devices/*/; do
-            local vendor=$(cat "$dev/idVendor" 2>/dev/null)
-            local product=$(cat "$dev/idProduct" 2>/dev/null)
-            local name=$(cat "$dev/product" 2>/dev/null || echo "Unknown device")
-            [[ -n "$vendor" ]] && echo -e "  ${CYN}${vendor}:${product}${RST}  $name"
+            local v=$(cat "$dev/idVendor" 2>/dev/null)
+            local p=$(cat "$dev/idProduct" 2>/dev/null)
+            local n=$(cat "$dev/product" 2>/dev/null || echo "Unknown")
+            [[ -n "$v" ]] && echo -e "  ${C}${v}:${p}${N}  $n"
         done
     fi
     pause_key
 }
 
-page_firewall() {
+pg_firewall() {
     banner
-    echo -e "  ${WHT}── Firewall / iptables ──────────────────────────────${RST}\n"
+    echo -e "  ${W}── Firewall / iptables ──────────────────────────────${N}\n"
     iptables -L -n -v 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
     pause_key
 }
 
-page_logs() {
+pg_logs() {
     banner
-    echo -e "  ${WHT}── System Logs ──────────────────────────────────────${RST}\n"
-    echo -e "  ${DIM}Last 30 lines of /var/log/messages:${RST}\n"
-    tail -30 /var/log/messages 2>/dev/null | while IFS= read -r l; do echo "  $l"; done \
-        || echo "  /var/log/messages not available."
+    echo -e "  ${W}── System Logs (last 40 lines) ──────────────────────${N}\n"
+    tail -40 /var/log/messages 2>/dev/null | while IFS= read -r l; do echo "  $l"; done \
+        || { journalctl -n 40 2>/dev/null | while IFS= read -r l; do echo "  $l"; done; }
     pause_key
 }
 
-page_cros_logs() {
+pg_cros_logs() {
     banner
-    echo -e "  ${WHT}── ChromeOS Logs ────────────────────────────────────${RST}\n"
-    local logdir="/var/log/chrome"
-    if [[ -d "$logdir" ]]; then
-        echo -e "  ${DIM}Chrome logs (last 20 lines):${RST}\n"
-        ls -t "$logdir"/*.log 2>/dev/null | head -1 | xargs tail -20 2>/dev/null \
-            | while IFS= read -r l; do echo "  $l"; done
-    fi
-    echo -e "\n  ${DIM}update_engine log (last 20):${RST}\n"
+    echo -e "  ${W}── ChromeOS Logs ────────────────────────────────────${N}\n"
+    echo -e "  ${D}update_engine (last 20):${N}"
     tail -20 /var/log/update_engine.log 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+    echo -e "\n  ${D}Chrome (last 15):${N}"
+    local cf=$(ls -t /var/log/chrome/*.log 2>/dev/null | head -1)
+    [[ -n "$cf" ]] && tail -15 "$cf" | while IFS= read -r l; do echo "  $l"; done
+    echo -e "\n  ${D}power_manager (last 10):${N}"
+    tail -10 /var/log/power_manager/power_log 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+    pause_key
+}
+
+pg_extensions() {
+    banner
+    echo -e "  ${W}── Chrome Extensions ────────────────────────────────${N}\n"
+    local dir="/home/chronos/user/Extensions"
+    [[ ! -d "$dir" ]] && dir=$(find /home/chronos -name "Extensions" -type d 2>/dev/null | head -1)
+    if [[ -z "$dir" || ! -d "$dir" ]]; then
+        echo "  Extensions directory not found."
+        pause_key; return
+    fi
+    local n=0
+    printf "  ${W}%-26s %-40s %s${N}\n" "ID" "Name" "Ver"
+    echo "  $(printf '%0.s─' {1..68})"
+    for id_dir in "$dir"/*/; do
+        local id=$(basename "$id_dir")
+        local mf=$(find "$id_dir" -name "manifest.json" 2>/dev/null | sort -V | tail -1)
+        local name="?" ver="?"
+        if [[ -n "$mf" ]]; then
+            name=$(python3 -c "import json; d=json.load(open('$mf')); print(d.get('name','?')[:38])" \
+                2>/dev/null || grep '"name"' "$mf" 2>/dev/null | head -1 \
+                    | sed 's/.*"\(.*\)".*/\1/' | cut -c1-38)
+            ver=$(python3 -c "import json; d=json.load(open('$mf')); print(d.get('version','?'))" \
+                2>/dev/null || grep '"version"' "$mf" 2>/dev/null | head -1 \
+                    | sed 's/.*"\(.*\)".*/\1/')
+        fi
+        printf "  ${D}%-26s${N} %-40s ${D}%s${N}\n" "${id:0:26}" "${name:0:38}" "$ver"
+        ((n++))
+    done
+    echo -e "\n  ${D}${n} extension(s)${N}"
+    pause_key
+}
+
+pg_cronos_passwd() {
+    banner
+    echo -e "  ${W}── Change chronos Password ──────────────────────────${N}\n"
+    echo -e "  This sets the chronos user password."
+    echo -e "  Useful for SSH access and sudo authentication.\n"
+    passwd chronos
+    pause_key
+}
+
+pg_root_passwd() {
+    banner
+    echo -e "  ${W}── Change root Password ─────────────────────────────${N}\n"
+    passwd root
+    pause_key
+}
+
+pg_ssh_enable() {
+    banner
+    echo -e "  ${W}── Enable SSH ───────────────────────────────────────${N}\n"
+    echo -e "  Starting sshd on port 22...\n"
+    # Set chronos password first if not set
+    if ! passwd -S chronos 2>/dev/null | grep -q " P "; then
+        echo -e "  ${Y}[!] chronos has no password set. Set one first for SSH auth.${N}"
+    fi
+    /usr/sbin/sshd 2>/dev/null && echo -e "  ${G}[+] sshd started.${N}" \
+        || echo -e "  ${R}[!] sshd failed to start.${N}"
+    echo -e "  ${D}Connect via: ssh chronos@$(hostname -I | awk '{print $1}')${N}"
     pause_key
 }
 
@@ -681,40 +736,42 @@ menu_rootfs() {
     draw_menu "Rootfs Mount" \
         "Remount read-write" \
         "Remount read-only" \
-        "Check current mount flags" \
+        "Show mount flags" \
         "← Back"
     case $MENU_RESULT in
-        0) banner; remount_rw; echo -e "  ${GRN}[+] Remounted read-write.${RST}"; pause_key ;;
+        0) banner; remount_rw; echo -e "  ${G}[+] Remounted read-write.${N}"; pause_key ;;
         1) banner; mount -o remount,ro / 2>/dev/null
-           echo -e "  ${GRN}[+] Remounted read-only.${RST}"; pause_key ;;
+           echo -e "  ${G}[+] Remounted read-only.${N}"; pause_key ;;
         2) banner
-           echo -e "  ${WHT}── Mount Flags ──────────────────────────────────────${RST}\n"
-           mount | grep -E "^/dev|^\/ " | while IFS= read -r l; do echo "  $l"; done
+           echo -e "  ${W}── Mount Flags ──────────────────────────────────────${N}\n"
+           mount | grep -E "^/dev| on / " | while IFS= read -r l; do echo "  $l"; done
            pause_key ;;
     esac
 }
 
 menu_updates() {
     draw_menu "Update Engine" \
-        "Block auto-updates (stop)" \
-        "Allow auto-updates (start)" \
+        "Block auto-updates" \
+        "Allow auto-updates" \
         "Check update status" \
         "Force update check" \
         "← Back"
     case $MENU_RESULT in
         0) banner
-           systemctl stop update-engine 2>/dev/null; stop update-engine 2>/dev/null
+           systemctl stop update-engine 2>/dev/null
+           stop update-engine 2>/dev/null
            pkill -f update_engine 2>/dev/null
-           echo -e "  ${GRN}[+] Updates blocked until next reboot.${RST}"; pause_key ;;
+           echo -e "  ${G}[+] Updates blocked until next reboot.${N}"; pause_key ;;
         1) banner
-           systemctl start update-engine 2>/dev/null; start update-engine 2>/dev/null
-           echo -e "  ${GRN}[+] Update engine re-enabled.${RST}"; pause_key ;;
+           systemctl start update-engine 2>/dev/null
+           start update-engine 2>/dev/null
+           echo -e "  ${G}[+] Update engine re-enabled.${N}"; pause_key ;;
         2) banner
-           echo -e "  ${WHT}── Update Status ────────────────────────────────────${RST}\n"
+           echo -e "  ${W}── Update Status ──────────────────────────────────${N}\n"
            update_engine_client --status 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
            pause_key ;;
         3) banner
-           echo -e "  ${YLW}[*] Triggering update check...${RST}\n"
+           echo -e "  ${Y}[*] Triggering update check...${N}\n"
            update_engine_client --check_for_update 2>/dev/null
            sleep 2
            update_engine_client --status 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
@@ -726,34 +783,37 @@ menu_wipe() {
     draw_menu "Wipe / Clean" \
         "Wipe system logs" \
         "Clear /tmp" \
-        "Clear Chrome cache (stateful)" \
+        "Clear Chrome cache" \
         "← Back"
     case $MENU_RESULT in
-        0)  banner
-            echo -ne "  ${YLW}[!] Clear system logs? [y/N]:${RST} "
-            read -r confirm
-            if [[ "$confirm" =~ ^[Yy]$ ]]; then
-                for f in /var/log/*.log /var/log/messages /var/log/syslog; do
-                    [[ -f "$f" ]] && > "$f" && echo -e "  ${GRN}cleared:${RST} $f"
-                done
-                journalctl --rotate --vacuum-time=1s 2>/dev/null
-                echo -e "\n  ${GRN}[+] Logs cleared.${RST}"
-            else; echo -e "  ${DIM}Cancelled.${RST}"; fi
-            pause_key ;;
-        1)  banner
-            echo -ne "  ${YLW}[!] Clear /tmp? [y/N]:${RST} "
-            read -r c; [[ "$c" =~ ^[Yy]$ ]] && rm -rf /tmp/* 2>/dev/null \
-                && echo -e "  ${GRN}[+] /tmp cleared.${RST}" || echo -e "  ${DIM}Cancelled.${RST}"
-            pause_key ;;
-        2)  banner
-            echo -ne "  ${YLW}[!] Clear Chrome cache? [y/N]:${RST} "
-            read -r c
-            if [[ "$c" =~ ^[Yy]$ ]]; then
-                find /home/chronos -name "Cache" -type d 2>/dev/null | while read d; do
-                    rm -rf "$d"/* 2>/dev/null && echo -e "  ${GRN}cleared:${RST} $d"
-                done
-            else; echo -e "  ${DIM}Cancelled.${RST}"; fi
-            pause_key ;;
+        0) banner
+           if confirm_yn "Clear system logs?"; then
+               for f in /var/log/*.log /var/log/messages /var/log/syslog; do
+                   [[ -f "$f" ]] && > "$f" && echo -e "  ${G}cleared:${N} $f"
+               done
+               journalctl --rotate --vacuum-time=1s 2>/dev/null
+               echo -e "\n  ${G}[+] Done.${N}"
+           else
+               echo -e "  ${D}Cancelled.${N}"
+           fi
+           pause_key ;;
+        1) banner
+           if confirm_yn "Clear /tmp?"; then
+               rm -rf /tmp/* 2>/dev/null
+               echo -e "  ${G}[+] /tmp cleared.${N}"
+           else
+               echo -e "  ${D}Cancelled.${N}"
+           fi
+           pause_key ;;
+        2) banner
+           if confirm_yn "Clear Chrome cache?"; then
+               find /home/chronos -name "Cache" -type d 2>/dev/null | while read d; do
+                   rm -rf "${d:?}"/* 2>/dev/null && echo -e "  ${G}cleared:${N} $d"
+               done
+           else
+               echo -e "  ${D}Cancelled.${N}"
+           fi
+           pause_key ;;
     esac
 }
 
@@ -765,13 +825,13 @@ menu_scripts() {
             "R-Patch   (Rollback Patcher)" \
             "← Back"
         case $MENU_RESULT in
-            0) banner; echo -e "${YLW}[*] Running K-Patch...${RST}\n"
+            0) banner; echo -e "${Y}[*] Running K-Patch...${N}\n"
                bash <(curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/K-Patch)
                pause_key ;;
-            1) banner; echo -e "${YLW}[*] Running SAUB...${RST}\n"
+            1) banner; echo -e "${Y}[*] Running SAUB...${N}\n"
                bash <(curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/SAUB)
                pause_key ;;
-            2) banner; echo -e "${YLW}[*] Running R-Patch...${RST}\n"
+            2) banner; echo -e "${Y}[*] Running R-Patch...${N}\n"
                bash <(curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/R-Patch)
                pause_key ;;
             *) return ;;
@@ -779,53 +839,34 @@ menu_scripts() {
     done
 }
 
-page_repair_sudo() {
+pg_repair_sudo() {
     banner
-    echo -e "  ${WHT}── Repair sudo (minioverride) ────────────────────────${RST}\n"
-    echo -e "  Reinstalls the minioverride fix so sudo works from crosh."
-    echo -e "  Requires a reboot to take effect.\n"
-    echo -ne "  ${CYN}Continue? [y/N]:${RST} "
-    read -r confirm
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+    echo -e "  ${W}── Repair sudo (minioverride) ───────────────────────${N}\n"
+    echo -e "  Rebuilds minioverride.so and re-patches ui.conf."
+    echo -e "  A reboot is required after this step.\n"
+    if confirm_yn "Continue?"; then
         remount_rw
         mkdir -p /usr/local/bin
         rm -f "$OVERRIDE_SO"
         NEEDS_REBOOT=0
         install_minioverride
+        # Also update rootfs copy
+        [[ -f "$OVERRIDE_SO" ]] && cp "$OVERRIDE_SO" /usr/bin/minioverride.so 2>/dev/null
         if [[ $NEEDS_REBOOT -eq 1 ]]; then
-            echo -ne "\n  Reboot now? [y/N]: "
-            read -r rb; [[ "$rb" =~ ^[Yy]$ ]] && reboot
+            if confirm_yn "Reboot now?"; then reboot; fi
         fi
     else
-        echo -e "  ${DIM}Cancelled.${RST}"
+        echo -e "  ${D}Cancelled.${N}"
     fi
     pause_key
 }
 
-page_gbb_flags() {
+pg_bash() {
     banner
-    echo -e "  ${WHT}── GBB Flags ────────────────────────────────────────${RST}\n"
-    if command -v futility &>/dev/null; then
-        echo -e "  ${DIM}Current GBB flags:${RST}"
-        futility gbb --get --flags 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
-        echo -e "\n  ${DIM}Common values:${RST}"
-        echo -e "  ${CYN}0x0001${RST}  DEV_SCREEN_SHORT_DELAY"
-        echo -e "  ${CYN}0x0002${RST}  LOAD_OPTION_READONLY"
-        echo -e "  ${CYN}0x0004${RST}  ENABLE_ALTERNATE_OS"
-        echo -e "  ${CYN}0x0008${RST}  FORCE_DEV_SWITCH_ON"
-        echo -e "  ${CYN}0x0020${RST}  DISABLE_FW_ROLLBACK_CHECK"
-        echo -e "  ${CYN}0x8000${RST}  CCD_UNLOCK (no dev mode beep)"
-    else
-        echo "  futility not found."
-    fi
-    pause_key
-}
-
-page_bash() {
-    banner
-    echo -e "  ${YLW}[*] Dropping to root bash. Type 'exit' to return to cshell.${RST}\n"
+    echo -e "  ${Y}[*] Root bash shell. Type 'exit' to return.${N}\n"
     bash --login
-    echo -e "\n  ${CYN}[*] Back in cshell.${RST}"; sleep 1
+    echo -e "\n  ${C}[*] Back in cshell.${N}"
+    sleep 1
 }
 
 menu_power() {
@@ -835,16 +876,32 @@ menu_power() {
         "Shut down" \
         "← Back"
     case $MENU_RESULT in
-        0) echo -e "${YLW}[*] Rebooting...${RST}"; sleep 1; reboot ;;
-        1) echo -e "${YLW}[*] Rebooting to recovery...${RST}"; sleep 1
+        0) echo -e "${Y}Rebooting...${N}"; sleep 1; reboot ;;
+        1) echo -e "${Y}Rebooting to recovery...${N}"; sleep 1
            crossystem recovery_request=1 2>/dev/null; reboot ;;
-        2) echo -e "${YLW}[*] Shutting down...${RST}"; sleep 1; poweroff ;;
+        2) echo -e "${Y}Shutting down...${N}"; sleep 1; poweroff ;;
     esac
 }
 
-# ─────────────────────────────────────────
-#  MAIN SHELL MENU
-# ─────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════
+#  CROSH ENTRYPOINT — check if sudo works, handle gracefully
+# ════════════════════════════════════════════════════════════════
+check_sudo_works() {
+    # Quick test: can we get root?
+    if [[ "$(id -u)" -eq 0 ]]; then
+        return 0  # already root, fine
+    fi
+    # Try sudo with a no-op
+    if sudo -n true 2>/dev/null; then
+        return 0
+    fi
+    # sudo is blocked (NO_NEW_PRIVS)
+    return 1
+}
+
+# ════════════════════════════════════════════════════════════════
+#  MAIN MENU
+# ════════════════════════════════════════════════════════════════
 shell_main_menu() {
     while true; do
         draw_menu "Main Menu" \
@@ -867,53 +924,86 @@ shell_main_menu() {
             "Rootfs Mount" \
             "Update Engine" \
             "Wipe / Clean" \
+            "SSH Enable" \
+            "Change chronos Password" \
+            "Change root Password" \
             "Scripts  ›  K-Patch / SAUB / R-Patch" \
             "Repair sudo (minioverride)" \
             "Root Bash Shell" \
             "Power  ›  Reboot / Shutdown" \
             "Exit"
         case $MENU_RESULT in
-            0)  page_sysinfo ;;
-            1)  page_battery ;;
-            2)  page_sensors ;;
-            3)  page_devmode ;;
-            4)  page_gbb_flags ;;
-            5)  page_vpd ;;
-            6)  page_net ;;
-            7)  page_wifi ;;
-            8)  page_storage ;;
-            9)  page_memory ;;
-            10) page_procs ;;
-            11) page_usb ;;
-            12) page_firewall ;;
-            13) page_extensions ;;
-            14) page_logs ;;
-            15) page_cros_logs ;;
+            0)  pg_sysinfo ;;
+            1)  pg_battery ;;
+            2)  pg_sensors ;;
+            3)  pg_devmode ;;
+            4)  pg_gbb ;;
+            5)  pg_vpd ;;
+            6)  pg_net ;;
+            7)  pg_wifi ;;
+            8)  pg_storage ;;
+            9)  pg_memory ;;
+            10) pg_procs ;;
+            11) pg_usb ;;
+            12) pg_firewall ;;
+            13) pg_extensions ;;
+            14) pg_logs ;;
+            15) pg_cros_logs ;;
             16) menu_rootfs ;;
             17) menu_updates ;;
             18) menu_wipe ;;
-            19) menu_scripts ;;
-            20) page_repair_sudo ;;
-            21) page_bash ;;
-            22) menu_power ;;
-            23|-1) echo -e "${DIM}Goodbye.${RST}"; exit 0 ;;
+            19) pg_ssh_enable ;;
+            20) pg_cronos_passwd ;;
+            21) pg_root_passwd ;;
+            22) menu_scripts ;;
+            23) pg_repair_sudo ;;
+            24) pg_bash ;;
+            25) menu_power ;;
+            26|-1) echo -e "${D}Goodbye.${N}"; exit 0 ;;
         esac
     done
 }
 
-# ─────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════
 #  ENTRY POINT
-# ─────────────────────────────────────────
-[[ "$1" == "--delete"  ]] && { [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" --delete; do_delete; }
-[[ "$1" == "--restore" ]] && { [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" --restore; do_restore_crosh; }
+# ════════════════════════════════════════════════════════════════
 
-[[ "$(id -u)" -ne 0 ]] && exec sudo "$0" "$@"
+# Handle CLI flags
+case "${1:-}" in
+    --delete)  [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" --delete; do_delete ;;
+    --restore) [[ "$(id -u)" -ne 0 ]] && exec sudo "$0" --restore; do_restore_crosh ;;
+esac
 
-if [[ "$(realpath "$0" 2>/dev/null)" == "$SHELL_PATH" ]]; then
-    shell_main_menu; exit 0
+# If we ARE the installed shell (launched from crosh stub)
+if [[ "$(realpath "$0" 2>/dev/null)" == "$SHELL_PATH" || \
+      "$(realpath "$0" 2>/dev/null)" == "$ROOTFS_SHELL" ]]; then
+
+    # Try to get root — but don't die if sudo is broken
+    if [[ "$(id -u)" -ne 0 ]]; then
+        if check_sudo_works; then
+            exec sudo "$SHELL_PATH"
+        else
+            # sudo broken — warn but proceed as chronos
+            clear
+            echo -e "${Y}"
+            echo "  ╔════════════════════════════════════════════╗"
+            echo "  ║  WARNING: sudo did not work properly       ║"
+            echo "  ║  Continuing as chronos (limited access)    ║"
+            echo "  ║  Run 'Repair sudo' and reboot to fix       ║"
+            echo "  ╚════════════════════════════════════════════╝"
+            echo -e "${N}"
+            sleep 2
+        fi
+    fi
+
+    shell_main_menu
+    exit 0
 fi
 
-# Setup menu
+# Escalate to root for setup operations
+[[ "$(id -u)" -ne 0 ]] && exec sudo "$0" "$@"
+
+# ── Setup menu ───────────────────────────────────────────────────
 while true; do
     draw_menu "What would you like to do?" \
         "Install cshell" \
@@ -922,10 +1012,12 @@ while true; do
         "Exit"
     case $MENU_RESULT in
         0) do_install ;;
-        1) draw_menu "Delete cshell — are you sure?" "Yes — delete cshell" "No  — go back"
+        1) draw_menu "Delete cshell — are you sure?" \
+               "Yes — delete cshell" "No  — go back"
            [[ $MENU_RESULT -eq 0 ]] && do_delete ;;
-        2) draw_menu "Restore crosh — are you sure?" "Yes — restore original crosh" "No  — go back"
+        2) draw_menu "Restore crosh — are you sure?" \
+               "Yes — restore original crosh" "No  — go back"
            [[ $MENU_RESULT -eq 0 ]] && do_restore_crosh ;;
-        3|-1) echo -e "${DIM}Goodbye.${RST}"; exit 0 ;;
+        3|-1) echo -e "${D}Goodbye.${N}"; exit 0 ;;
     esac
 done
