@@ -1131,7 +1131,7 @@ if [[ "$(realpath "$0" 2>/dev/null)" == "$SHELL_PATH" || \
         echo "  ║  Root access unavailable in crosh                ║"
         echo "  ║                                                  ║"
         echo "  ║  To fix (one-time setup):                        ║"
-        echo "  ║  VT2 (Ctrl+Alt+F2) → root → run cshell          ║"
+        echo "  ║  VT2 (Ctrl+Alt+F2) → root → run cshell           ║"
         echo "  ║                                                  ║"
         echo "  ║  OR: SSH/doas Setup → Restart sshd (port 1337)   ║"
         echo "  ╚══════════════════════════════════════════════════╝"
