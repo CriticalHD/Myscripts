@@ -111,39 +111,26 @@ safe_write_stdin() {
 write_self_to() {
     local dest="$1"
     local me="${BASH_SOURCE[0]:-$0}"
-
-    # Method 1: we are a real file (bash script.sh or bash <(curl))
-    if [[ -f "$me" && "$me" != "bash" && "$me" != "/bin/bash" && "$me" != "/dev/stdin" ]]; then
-        safe_write "$me" "$dest" && return 0
+    # Method 1: real file on disk (now works thanks to the pipe handler above)
+    if [[ -f "$me" && "$me" != "bash" && "$me" != "/bin/bash" ]]; then
+        cp "$me" "$dest" 2>/dev/null && [[ -s "$dest" ]] && return 0
     fi
-
-    # Method 2: extract payload from end of ourselves
-    local pline
-    if [[ -f "$me" ]]; then
-        pline=$(grep -n "^__PAYLOAD__$" "$me" 2>/dev/null | tail -1 | cut -d: -f1)
-        if [[ -n "$pline" ]]; then
-            local tmp; tmp=$(mktemp /tmp/cshell_XXXXXX)
-            tail -n +"$((pline+1))" "$me" | base64 -d > "$tmp" 2>/dev/null
-            [[ -s "$tmp" ]] && { safe_write "$tmp" "$dest"; local r=$?; rm -f "$tmp"; return $r; }
-            rm -f "$tmp"
-        fi
+    # Method 2: payload extraction (keeps original self-extract working)
+    local pline; pline=$(_get_payload_line "$me")
+    if [[ -n "$pline" ]]; then
+        tail -n +"$((pline+1))" "$me" | base64 -d > "$dest" 2>/dev/null \
+            && [[ -s "$dest" ]] && return 0
     fi
-
-    # Method 3: bash fd 255 (pipe mode - bash <(curl) or curl|bash)
-    local tmp; tmp=$(mktemp /tmp/cshell_XXXXXX)
+    # Method 3: bash fd fallback
     for fd in 255 254 253; do
-        if [[ -r "/proc/$$/fd/$fd" ]]; then
-            cp "/proc/$$/fd/$fd" "$tmp" 2>/dev/null
-            if [[ -s "$tmp" ]] && head -1 "$tmp" | grep -q "bash"; then
-                safe_write "$tmp" "$dest"; local r=$?; rm -f "$tmp"; return $r
-            fi
-        fi
+        [[ -r "/proc/ \]/fd/$fd" ]] && cp "/proc/$$/fd/$fd" "$dest" 2>/dev/null \
+            && [[ -s "$dest" ]] && return 0
     done
-    rm -f "$tmp" 2>/dev/null
-
+    # Ultimate fallback: re-download self (makes installer 100% reliable)
+    curl -sSL -o "$dest" "https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/C-Shell" 2>/dev/null \
+        && [[ -s "$dest" ]] && return 0
     return 1
 }
-
 # ════════════════════════════════════════════════════════════════
 #  MENU — crosh+VT2 compatible
 # ════════════════════════════════════════════════════════════════
