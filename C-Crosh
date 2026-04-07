@@ -1,12 +1,4 @@
 #!/bin/bash
-
-if [[ ! -t 0 ]]; then
-    TMP="/tmp/cshell-\[ .sh"
-    cat > "$TMP" <&0
-    chmod +x "$TMP"
-    exec "\( TMP" " \)@"
-fi
-
 # cshell v4.4 — Custom ChromeOS Shell
 # Landlock-safe install: writes via stateful partition + python3 fallback
 
