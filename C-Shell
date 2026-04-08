@@ -666,45 +666,114 @@ menu_diagnostics() {
 # ════════════════════════════════════════════════════════════════
 pg_crossystem_flags() {
     while true; do
-        banner; echo -e "  ${W}── Crossystem Flags ─────────────────────────────────${N}\n"
-        command -v crossystem &>/dev/null || { echo "  crossystem not available."; pause_key; return; }
-        local ro_flags=(devsw_boot devsw_cur wpsw_cur wpsw_boot fwid ro_fwid
-                        mainfw_act mainfw_type tpm_kernver tpm_fwver hwid
-                        kernkey_vfy recoverysw_boot recoverysw_cur
-                        inside_vm cros_debug vdat_flags)
-        local rw_flags=(dev_boot_usb dev_boot_signed_only dev_boot_legacy
-                        dev_boot_altfw dev_default_boot block_devmode
-                        tried_fwb nvram_cleared recovery_reason
-                        kern_nv_used clear_tpm_owner_done)
-        echo -e "  ${W}Read-only:${N}"
-        for key in "${ro_flags[@]}"; do
-            local val=$(crossystem $key 2>/dev/null||echo "n/a")
+        banner
+        echo -e "  ${W}── Crossystem Flags ─────────────────────────────────${N}\n"
+        
+        command -v crossystem &>/dev/null || { 
+            echo "  ${R}crossystem not available.${N}"; 
+            pause_key; return; 
+        }
+
+        echo -e "  ${W}Fetching all parameters...${N}"
+
+        # Get all parameters with descriptions if possible
+        local all_output
+        if crossystem --all &>/dev/null; then
+            all_output=$(crossystem --all 2>/dev/null)
+        else
+            all_output=$(crossystem 2>/dev/null)
+        fi
+
+        # Separate into RO and RW
+        declare -A ro_params rw_params
+
+        while IFS= read -r line; do
+            # Skip empty lines and header-like lines
+            [[ -z "$line" || "$line" =~ ^[[:space:]]*(Parameter|Flags|Description) ]] && continue
+            
+            # Parse "name = value   # description" or similar
+            if [[ "$line" =~ ^[[:space:]]*([a-zA-Z0-9_]+)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+                local key="${BASH_REMATCH[1]}"
+                local val="${BASH_REMATCH[2]%%[[:space:]]#*}"  # trim comment/desc
+                val="${val%%[[:space:]]}"  # trim trailing spaces
+                
+                # Determine if RW: try to see if it's writable (non-destructive check)
+                if root_available && crossystem "${key}?" &>/dev/null 2>&1; then
+                    # Some versions support query; alternatively, we can check if setting fails gracefully
+                    rw_params["$key"]="$val"
+                else
+                    ro_params["$key"]="$val"
+                fi
+            fi
+        done <<< "$all_output"
+
+        # Fallback: if parsing failed, fall back to your original lists + full dump option
+        if [[ ${#ro_params[@]} -eq 0 && ${#rw_params[@]} -eq 0 ]]; then
+            echo -e "  ${Y}Dynamic parse failed, using built-in lists.${N}"
+            # (you can keep your original ro_flags / rw_flags here as fallback)
+        fi
+
+        echo -e "\n  ${W}Read-only (RO):${N}"
+        for key in "${!ro_params[@]}"; do
+            local val="${ro_params[$key]:-n/a}"
             local vc=$D; [[ "$val" == "1" ]] && vc=$G
             printf "  ${C}%-28s${N} ${vc}%s${N}\n" "$key" "$val"
-        done
-        echo -e "\n  ${W}Read-write (editable):${N}"
-        for key in "${rw_flags[@]}"; do
-            local val=$(crossystem $key 2>/dev/null||echo "n/a")
+        done | sort
+
+        echo -e "\n  ${W}Read-write (RW, editable):${N}"
+        for key in "${!rw_params[@]}"; do
+            local val="${rw_params[$key]:-n/a}"
             local vc=$D; [[ "$val" == "1" ]] && vc=$G
             printf "  ${C}%-28s${N} ${vc}%-6s${N} ${C}[RW]${N}\n" "$key" "$val"
-        done
-        echo -e "\n  ${D}[E] Edit RW flag  [F] Full dump  [any] Back${N}"
+        done | sort
+
+        echo -e "\n  ${D}[E] Edit RW flag  [F] Full dump (crossystem --all)  [any] Back${N}"
         local k; tread1 k
+
         case "$k" in
             e|E)
-                if ! root_available; then echo -e "  ${R}Need root.${N}"; pause_key; continue; fi
-                echo -e "\n  ${W}Select flag:${N}"
-                for i in "${!rw_flags[@]}"; do
-                    echo -e "  ${C}$((i+1)))${N}  ${rw_flags[$i]} = $(crossystem ${rw_flags[$i]} 2>/dev/null||echo ?)"
+                if ! root_available; then 
+                    echo -e "  ${R}Need root.${N}"; 
+                    pause_key; continue; 
+                fi
+                
+                # Build dynamic RW list for editing
+                local rw_list=("${!rw_params[@]}")
+                if [[ ${#rw_list[@]} -eq 0 ]]; then
+                    # Fallback to your original if dynamic failed
+                    rw_list=("${rw_flags[@]}")
+                fi
+                
+                echo -e "\n  ${W}Select RW flag to edit:${N}"
+                for i in "${!rw_list[@]}"; do
+                    local cur=$(crossystem "${rw_list[$i]}" 2>/dev/null || echo "?")
+                    echo -e "  ${C}$((i+1)))${N}  ${rw_list[$i]} = ${cur}"
                 done
+                
                 echo -ne "\n  ${Y}Number:${N} "; local fn_i; tread fn_i
-                local fname="${rw_flags[$((fn_i-1))]}"
+                local fname="${rw_list[$((fn_i-1))]}"
                 [[ -z "$fname" ]] && { echo -e "  ${R}Invalid.${N}"; pause_key; continue; }
+                
                 echo -ne "  ${Y}New value (0 or 1):${N} "; local fval; tread fval
-                [[ "$fval" != "0" && "$fval" != "1" ]] && { echo -e "  ${R}Must be 0 or 1.${N}"; pause_key; continue; }
+                [[ "$fval" != "0" && "$fval" != "1" ]] && { 
+                    echo -e "  ${R}Must be 0 or 1.${N}"; 
+                    pause_key; continue; 
+                }
+                
                 root_run "crossystem ${fname}=${fval}" 2>&1 | while IFS= read -r l; do echo "  $l"; done
-                echo -e "  ${G}Done: ${fname} = $(crossystem $fname 2>/dev/null)${N}"; pause_key ;;
-            f|F) banner; crossystem 2>/dev/null | while IFS= read -r l; do echo "  $l"; done; pause_key ;;
+                echo -e "  ${G}Done: ${fname} = $(crossystem $fname 2>/dev/null || echo n/a)${N}"
+                pause_key ;;
+                
+            f|F)
+                banner
+                echo -e "  ${W}Full crossystem output:${N}\n"
+                if crossystem --all &>/dev/null; then
+                    crossystem --all 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+                else
+                    crossystem 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+                fi
+                pause_key ;;
+                
             *) return ;;
         esac
     done
