@@ -1,5 +1,5 @@
 #!/bin/bash
-# cshell v6.4 — Custom ChromeOS Shell
+# cshell v6.5 — Custom ChromeOS Shell
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -15,7 +15,8 @@ ROOTFS_SHELL="/usr/bin/cshell_rootfs"
 INIT_SCRIPT="/etc/init/cshell-restore.conf"
 UI_CONF="/etc/init/ui.conf"
 OVERRIDE_SO="/usr/local/bin/minioverride.so"
-VERSION="6.4"
+VERSION="6.5"
+UPDATE_URL="https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/C-Shell"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
 C='\033[0;36m'; W='\033[1;37m'; D='\033[2m'
@@ -42,6 +43,10 @@ banner() {
     echo "   ╚═════╝╚══════╝╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝"
     echo -e "${N}  ${W}Custom ChromeOS Shell${N} ${D}v${VERSION}${N}  |  ${G}$(whoami)@$(hostname -s 2>/dev/null||echo chromebook)${N}"
     echo -e "  ${D}────────────────────────────────────────────────────${N}"
+    if [[ -f /tmp/.cshell_update_avail ]]; then
+        local _uv; _uv=$(cat /tmp/.cshell_update_avail)
+        echo -e "  ${Y}⚡ Update available: v${VERSION} → v${_uv}  (Main Menu → Update C-Shell)${N}"
+    fi
     echo ""
 }
 pause_key() { echo -e "\n  ${D}Press any key...${N}"; tread1 _k; }
@@ -1536,6 +1541,63 @@ menu_power() {
 }
 
 # ════════════════════════════════════════════════════════════════
+#  AUTO UPDATE
+# ════════════════════════════════════════════════════════════════
+_cshell_check_update_bg() {
+    # Runs silently in background on startup — writes notice file if update available
+    local remote_ver
+    remote_ver=$(curl -fsSL "$UPDATE_URL" 2>/dev/null | grep -m1 '^VERSION=' | cut -d'"' -f2)
+    [[ -n "$remote_ver" && "$remote_ver" != "$VERSION" ]] && \
+        echo "$remote_ver" > /tmp/.cshell_update_avail
+}
+
+pg_update() {
+    banner
+    echo -e " ${W}── Update C-Shell ───────────────────────────────────${N}\n"
+    echo -e " ${C}Current version :${N} ${W}v${VERSION}${N}"
+    echo -e " ${Y}Checking for updates...${N}\n"
+
+    local tmp; tmp=$(mktemp /tmp/cshell_update.XXXXXX)
+    if ! curl -fsSL "$UPDATE_URL" -o "$tmp" 2>/dev/null || [[ ! -s "$tmp" ]]; then
+        echo -e " ${R}✗ Could not reach update server.${N}"
+        rm -f "$tmp"; pause_key; return
+    fi
+
+    local remote_ver; remote_ver=$(grep -m1 '^VERSION=' "$tmp" | cut -d'"' -f2)
+    if [[ -z "$remote_ver" ]]; then
+        echo -e " ${R}✗ Could not read remote version.${N}"
+        rm -f "$tmp"; pause_key; return
+    fi
+
+    echo -e " ${C}Remote version  :${N} ${W}v${remote_ver}${N}\n"
+
+    if [[ "$remote_ver" == "$VERSION" ]]; then
+        echo -e " ${G}✓ Already up to date.${N}"
+        rm -f "$tmp" /tmp/.cshell_update_avail; pause_key; return
+    fi
+
+    echo -e " ${Y}Update available: v${VERSION} → v${remote_ver}${N}"
+    confirm_yn "Apply update now?" || {
+        echo -e " ${D}Cancelled.${N}"; rm -f "$tmp"; pause_key; return
+    }
+
+    local self; self="$(realpath "$0" 2>/dev/null || echo "$0")"
+    chmod +x "$tmp"
+
+    if safe_write "$tmp" "$self"; then
+        rm -f "$tmp" /tmp/.cshell_update_avail
+        echo -e "\n ${G}✓ Updated to v${remote_ver}. Restarting...${N}\n"
+        sleep 1
+        exec "$self" "$@"
+    else
+        echo -e "\n ${R}✗ Could not write to ${self}.${N}"
+        echo -e " ${D}Try running from VT2 as root.${N}"
+        rm -f "$tmp"
+    fi
+    pause_key
+}
+
+# ════════════════════════════════════════════════════════════════
 #  CREDITS
 # ════════════════════════════════════════════════════════════════
 pg_credits() {
@@ -1576,6 +1638,7 @@ shell_main_menu() {
             "───────────────────────────────────────" \
             "Power  >  Reboot / Shutdown" \
             "Credits" \
+            "Update C-Shell" \
             "Exit"
         case $MENU_RESULT in
             0)  pg_root_shell ;;
@@ -1588,7 +1651,8 @@ shell_main_menu() {
             9)  pg_repair ;;
             11) menu_power ;;
             12) pg_credits ;;
-            13|-1) printf '\033[?25h'; echo -e "${D}Goodbye.${N}"; exit 0 ;;
+            13) pg_update ;;
+            14|-1) printf '\033[?25h'; echo -e "${D}Goodbye.${N}"; exit 0 ;;
         esac
     done
 }
@@ -1602,6 +1666,7 @@ case "${1:-}" in
 esac
 
 _detect_crosh
+_cshell_check_update_bg &   # silent background update check, zero startup delay
 
 # ── KEY FIX: If this process has NO_NEW_PRIVS set (minijail crosh sandbox)
 # but minioverride.so is installed, re-exec with LD_PRELOAD so sudo works.
