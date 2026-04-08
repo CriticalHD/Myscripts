@@ -1,5 +1,5 @@
 #!/bin/bash
-# cshell v5.7 — Custom ChromeOS Shell
+# cshell v5.8 — Custom ChromeOS Shell
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -15,7 +15,7 @@ ROOTFS_SHELL="/usr/bin/cshell_rootfs"
 INIT_SCRIPT="/etc/init/cshell-restore.conf"
 UI_CONF="/etc/init/ui.conf"
 OVERRIDE_SO="/usr/local/bin/minioverride.so"
-VERSION="5.7"
+VERSION="5.8"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
 C='\033[0;36m'; W='\033[1;37m'; D='\033[2m'
@@ -1183,82 +1183,119 @@ menu_system_mgmt() {
 # ════════════════════════════════════════════════════════════════
 pg_file_browser() {
     local cur="${1:-/}" PAGE=20 off=0 search=""
+
     while true; do
         local all=()
         while IFS= read -r name; do
+            [[ -z "$name" ]] && continue
             local fp="${cur%/}/${name}"
+
+            # Search filter
             [[ -n "$search" ]] && { echo "$name" | grep -qi "$search" || continue; }
+
             if [[ -d "$fp" ]]; then
-                all+=("[D] ${name}/")
-            else
+                all+=("📁 ${name}/")
+            elif [[ -f "$fp" ]]; then
                 local sz; sz=$(du -sh "$fp" 2>/dev/null | cut -f1)
-                all+=("[F] ${name}  (${sz:-?})")
+                all+=("📄 ${name} ${sz:+(${sz})}")
+            else
+                all+=("❓ ${name}")
             fi
-        done < <(ls -1p "$cur" 2>/dev/null)
+        done < <(ls -1p "$cur" 2>/dev/null | sed 's/\///' )   # Clean trailing / from ls -p
 
         local total=${#all[@]}
         local page_items=()
-        local i; for (( i=off; i<off+PAGE && i<total; i++ )); do page_items+=("${all[$i]}"); done
+        local i
+        for (( i=off; i<off+PAGE && i<total; i++ )); do
+            page_items+=("${all[$i]}")
+        done
+
         local showing=${#page_items[@]}
 
-        # Build nav items separately
+        # Navigation items
         local nav_items=()
-        [[ "$cur" != "/" ]] && nav_items+=("^ Up  (go to parent)")
-        [[ -n "$search" ]] && nav_items+=("* Clear search [${search}]") || nav_items+=("/ Search files")
-        (( off+PAGE < total )) && nav_items+=("v More  ($(( total-off-PAGE )) items)")
-        (( off > 0 ))          && nav_items+=("^ Prev page")
-        nav_items+=("< Exit")
+        [[ "$cur" != "/" ]] && nav_items+=("↑ Up to parent directory")
+        [[ -n "$search" ]] && nav_items+=("✕ Clear search (current: ${search})") || nav_items+=("🔍 Search in current folder")
+        (( off+PAGE < total )) && nav_items+=("↓ Next page ($(( total - off - PAGE )) remaining)")
+        (( off > 0 )) && nav_items+=("↑ Previous page")
+        nav_items+=("← Exit file browser")
 
-        local pg="$(( off+1 ))-$(( off+PAGE<total?off+PAGE:total ))/${total}"
-        [[ -n "$search" ]] && pg="${pg} filter:'${search}'"
+        local pg="$(( off+1 ))-$(( off+PAGE < total ? off+PAGE : total ))/${total}"
+        [[ -n "$search" ]] && pg="${pg}  [Filter: ${search}]"
 
-        # Single draw_menu call: page_items + separator + nav_items
-        local all_items=("${page_items[@]}" "───────────────────────────────────" "${nav_items[@]}")
-        draw_menu "Files: ${cur}  [${pg}]" "${all_items[@]}"
+        # Combine items
+        local all_items=("${page_items[@]}" "────────────────────────────────────────────" "${nav_items[@]}")
+
+        draw_menu "File Browser → ${cur}   [${pg}]" "${all_items[@]}"
         [[ $MENU_RESULT -eq -1 ]] && return
 
         local idx=$MENU_RESULT
 
         if (( idx < showing )); then
-            # File or dir
+            # User selected a file or directory
             local chosen="${page_items[$idx]}"
-            if [[ "$chosen" == "[D] "* ]]; then
-                local dn="${chosen#\[D\] }"; dn="${dn%/}"; cur="${cur%/}/${dn}"; off=0; search=""
+            local item_name="${chosen:2}"          # Remove emoji + space
+            item_name="${item_name%/}"             # Remove trailing / if any
+
+            local fullpath="${cur%/}/${item_name}"
+
+            if [[ -d "$fullpath" ]]; then
+                cur="$fullpath"
+                off=0
+                search=""
             else
-                local fn="${chosen#\[F\] }"; fn="${fn%%  (*}"; local fp="${cur%/}/${fn}"
+                # File actions menu
                 local is_x=0
-                [[ "${fn##*.}" == "sh" || "${fn##*.}" == "bash" || -x "$fp" ]] && is_x=1
-                local opts=(); [[ $is_x -eq 1 ]] && opts+=("Execute script")
-                opts+=("View tail-50" "View head-50" "Edit" "Delete" "File info" "Copy path" "< Back")
-                draw_menu "$fn" "${opts[@]}"
-                local fi=$MENU_RESULT; [[ $fi -eq -1 ]] && continue
+                [[ -x "$fullpath" || "${item_name##*.}" =~ ^(sh|bash|py)$ ]] && is_x=1
+
+                local opts=()
+                [[ $is_x -eq 1 ]] && opts+=("▶ Execute script")
+                opts+=("📜 View tail (last 50 lines)" 
+                       "📜 View head (first 50 lines)" 
+                       "✏ Edit file" 
+                       "🗑 Delete file" 
+                       "ℹ File info" 
+                       "📋 Copy full path" 
+                       "← Back")
+
+                draw_menu "${item_name}" "${opts[@]}"
+                local fi=$MENU_RESULT
+                [[ $fi -eq -1 ]] && continue
+
                 [[ $is_x -eq 1 && $fi -eq 0 ]] && {
-                    banner; echo -e "  ${Y}Executing $fp ...${N}\n"
-                    bash "$fp"; echo -e "\n  ${G}Done.${N}"; pause_key; continue; }
+                    banner
+                    echo -e " ${Y}Executing ${fullpath} ...${N}\n"
+                    bash "$fullpath"
+                    echo -e "\n ${G}Execution finished.${N}"
+                    pause_key
+                    continue
+                }
+
                 [[ $is_x -eq 1 ]] && (( fi-- ))
+
                 case $fi in
-                    0) banner; tail -50 "$fp" 2>/dev/null | while IFS= read -r l; do echo "  $l"; done; pause_key ;;
-                    1) banner; head -50 "$fp" 2>/dev/null | while IFS= read -r l; do echo "  $l"; done; pause_key ;;
-                    2) root_available && root_run "command -v nano &>/dev/null && nano '$fp' || vi '$fp'" \
-                           || { command -v nano &>/dev/null && nano "$fp" || vi "$fp"; } ;;
-                    3) confirm_yn "Delete $fp?" && { root_run "rm -f '$fp'" && echo -e "  ${G}Deleted.${N}"; }; pause_key ;;
-                    4) banner; ls -lah "$fp" 2>/dev/null; file "$fp" 2>/dev/null; pause_key ;;
-                    5) echo -e "  ${W}$fp${N}"; pause_key ;;
+                    0) banner; tail -n 50 "$fullpath" 2>/dev/null | while IFS= read -r l; do echo " $l"; done; pause_key ;;
+                    1) banner; head -n 50 "$fullpath" 2>/dev/null | while IFS= read -r l; do echo " $l"; done; pause_key ;;
+                    2) root_available && root_run "nano '$fullpath' 2>/dev/null || vi '$fullpath'" \
+                           || { nano "$fullpath" 2>/dev/null || vi "$fullpath"; } ;;
+                    3) confirm_yn "Delete ${fullpath}?" && {
+                           root_run "rm -f '$fullpath'" && echo -e " ${G}File deleted.${N}"
+                       }; pause_key ;;
+                    4) banner; ls -lah "$fullpath" 2>/dev/null; file "$fullpath" 2>/dev/null; pause_key ;;
+                    5) echo -e " ${W}Full path:${N} ${fullpath}"; pause_key ;;
                 esac
             fi
+
         else
-            # Nav item: idx >= showing; separator at showing (skipped by draw_menu)
-            # nav items at showing+1, showing+2, ...
-            # MENU_RESULT skips the separator, so nav_k = idx - showing - 1
+            # Navigation
             local nav_k=$(( idx - showing - 1 ))
-            [[ $nav_k -lt 0 || $nav_k -ge ${#nav_items[@]} ]] && continue
             case "${nav_items[$nav_k]}" in
-                "^ Up"*)     cur=$(dirname "$cur"); off=0; search="" ;;
-                "* Clear"*)  search=""; off=0 ;;
-                "/ Search"*) echo -ne "\n  ${Y}Search (regex ok):${N} "; tread search; off=0 ;;
-                "v More"*)   (( off += PAGE )) ;;
-                "^ Prev"*)   (( off -= PAGE )); (( off < 0 )) && off=0 ;;
-                "< Exit"*)   return ;;
+                "↑ Up to parent"*) cur=$(dirname "$cur"); off=0; search="" ;;
+                "✕ Clear search"*) search=""; off=0 ;;
+                "🔍 Search"*) echo -ne "\n ${Y}Enter search term:${N} "; tread search; off=0 ;;
+                "↓ Next page"*) (( off += PAGE )) ;;
+                "↑ Previous page"*) (( off -= PAGE )); [[ $off -lt 0 ]] && off=0 ;;
+                "← Exit"*) return ;;
             esac
         fi
     done
