@@ -765,131 +765,157 @@ pg_crossystem_flags() {
 }
 
 pg_gbb() {
-    banner
-    echo -e " ${W}── GBB Flags (Google Binary Block) ───────────────────${N}\n"
-
-    # ====================== FLAG DEFINITIONS ======================
-    declare -a GBB_FLAGS=(
-        "DEV_SCREEN_SHORT_DELAY|0x00000001|Reduce dev screen delay to 2s (no beep)|1"
-        "LOAD_OPTION_ROMS|0x00000002|Load option ROMs from arbitrary PCI devices|0"
-        "ENABLE_ALTERNATE_OS|0x00000004|Boot non-ChromeOS kernel|0"
-        "FORCE_DEV_SWITCH_ON|0x00000008|Force dev mode on (ignores hardware switch)|1"
-        "FORCE_DEV_BOOT_USB|0x00000010|Allow USB boot even if dev_boot_usb=0|1"
-        "DISABLE_ROLLBACK_CHECK|0x00000020|Disable firmware rollback protection|1"
-        "ENTER_TRIGGERS_TONORM|0x00000040|Enter key triggers dev → tonorm|1"
-        "FORCE_DEV_BOOT_ALTFW|0x00000080|Allow altfw/legacy even if dev_boot_altfw=0|1"
-        "RUNNING_FAFT|0x00000100|Deprecated FAFT test flag (do not use)|0"
-        "DISABLE_EC_SOFTWARE_SYNC|0x00000200|Disable EC software sync|1"
-        "DEFAULT_DEV_BOOT_ALTFW|0x00000400|Default to altfw on dev screen timeout|1"
-        "DISABLE_AUXFW_SOFTWARE_SYNC|0x00000800|Disable auxiliary firmware software sync|1"
-        "DISABLE_LID_SHUTDOWN|0x00001000|Disable shutdown on lid close|1"
-        "FORCE_UNLOCK_FASTBOOT|0x00002000|Full fastboot capability even in verified mode|1"
-        "FORCE_MANUAL_RECOVERY|0x00004000|Always assume manual recovery|1"
-        "DISABLE_FWMP|0x00008000|Ignore Firmware Management Parameters|1"
-        "ENABLE_UDC|0x00010000|Enable USB Device Controller|1"
-        "FORCE_CSE_SYNC|0x00020000|Force CSE sync even if versions match|1"
+    # ── GBB flag definitions: "NAME|HEX_MASK|Description"
+    local -a FLAGS=(
+        "DEV_SCREEN_SHORT_DELAY|0x00000001|Reduce dev screen delay to 2s"
+        "LOAD_OPTION_ROMS|0x00000002|Load option ROMs from PCI devices"
+        "ENABLE_ALTERNATE_OS|0x00000004|Boot non-ChromeOS kernel"
+        "FORCE_DEV_SWITCH_ON|0x00000008|Force dev mode on"
+        "FORCE_DEV_BOOT_USB|0x00000010|Allow USB boot regardless of setting"
+        "DISABLE_ROLLBACK_CHECK|0x00000020|Disable firmware rollback protection"
+        "ENTER_TRIGGERS_TONORM|0x00000040|Enter triggers dev → normal"
+        "FORCE_DEV_BOOT_ALTFW|0x00000080|Allow altfw/legacy boot"
+        "RUNNING_FAFT|0x00000100|Deprecated FAFT flag (do not use)"
+        "DISABLE_EC_SOFTWARE_SYNC|0x00000200|Disable EC software sync"
+        "DEFAULT_DEV_BOOT_ALTFW|0x00000400|Default to altfw on timeout"
+        "DISABLE_AUXFW_SOFTWARE_SYNC|0x00000800|Disable auxiliary FW sync"
+        "DISABLE_LID_SHUTDOWN|0x00001000|Disable shutdown on lid close"
+        "FORCE_UNLOCK_FASTBOOT|0x00002000|Full fastboot in verified mode"
+        "FORCE_MANUAL_RECOVERY|0x00004000|Always assume manual recovery"
+        "DISABLE_FWMP|0x00008000|Ignore Firmware Management Parameters"
+        "ENABLE_UDC|0x00010000|Enable USB Device Controller"
+        "FORCE_CSE_SYNC|0x00020000|Force CSE sync always"
     )
 
-    local current_hex="0x00000000"
+    local total=${#FLAGS[@]}
+    local cursor=0
     local selected=0
+    local current_hex="0x00000000"
+    local flash_status=""
 
-    # Read current flags
+    # ── Read current flags from device
     if root_available; then
         local tmpgbb; tmpgbb=$(mktemp /tmp/gbb.XXXXXX)
-        root_run "flashrom -p internal -i GBB -r $tmpgbb 2>/dev/null" >/dev/null 2>&1
+        root_run "flashrom -p internal -i GBB -r '$tmpgbb'" >/dev/null 2>&1
+        local raw=""
         if [[ -s "$tmpgbb" ]]; then
-            current_hex=$(futility gbb --get --flags "$tmpgbb" 2>/dev/null | awk '{print $NF}')
-        else
-            current_hex=$(root_run "futility gbb --get --flags 2>/dev/null" 2>/dev/null | awk '{print $NF}')
+            raw=$(futility gbb --get --flags "$tmpgbb" 2>/dev/null | grep -oP '0x[0-9A-Fa-f]+')
         fi
         rm -f "$tmpgbb"
-        [[ -z "$current_hex" || "$current_hex" == "0" ]] && current_hex="0x00000000"
-        selected=$(printf "%d" "$current_hex")
+        # Fallback: read directly without file
+        [[ -z "$raw" ]] && raw=$(root_run "futility gbb --get --flags" 2>/dev/null | grep -oP '0x[0-9A-Fa-f]+')
+        if [[ -n "$raw" ]]; then
+            current_hex="$raw"
+            selected=$(( raw ))   # bash evaluates 0x... literals correctly
+        fi
     fi
 
-    local cursor=0
-    local total_flags=${#GBB_FLAGS[@]}
-    local key
+    # ── Helper: decode selected int → array of set bit names
+    _gbb_active_names() {
+        local val=$1 names=()
+        for entry in "${FLAGS[@]}"; do
+            IFS='|' read -r name mask _ <<< "$entry"
+            local bit=$(( mask ))
+            (( val & bit )) && names+=("$name")
+        done
+        echo "${names[*]}"
+    }
 
-    # Initial draw
-    clear
-    banner
-    echo -e " ${W}── GBB Flags Editor ────────────────────────────────${N}\n"
-    echo -e " ${C}Current on device :${N} ${W}${current_hex}${N}\n"
+    # ── Draw full screen
+    _gbb_draw() {
+        clear
+        banner
+        echo -e " ${W}── GBB Flags Editor ────────────────────────────────${N}"
+        echo -e " ${C}Flags on device : ${W}${current_hex}${N}"
+        echo -e " ${C}Selected value  : ${W}$(printf '0x%08X' $selected)${N}\n"
 
-    while true; do
-        # Redraw only the list + selected value (smooth)
-        tput cup 5 0   # Move cursor to start of flag list
-
-        for i in "${!GBB_FLAGS[@]}"; do
-            IFS='|' read -r name mask desc supported <<< "${GBB_FLAGS[$i]}"
-            local bitval=$(( $(printf "%d" "$mask") ))
-            local checked=" "
-            local color="${N}"
-
-            (( selected & bitval )) && { checked="${G}✓${N}"; color="${G}"; }
-
+        for (( i=0; i<total; i++ )); do
+            IFS='|' read -r name mask desc <<< "${FLAGS[$i]}"
+            local bit=$(( mask ))
+            local box="${D}[ ]${N}"
+            local nc="${N}"
+            if (( selected & bit )); then
+                box="${G}[✓]${N}"
+                nc="${G}"
+            fi
             if (( i == cursor )); then
-                printf " ${Y}→${N} [${checked}] ${color}0x%08X %-28s ${D}%s${N}   \n" "$bitval" "$name" "$desc"
+                echo -e "  ${Y}▶${N} ${box} ${nc}$(printf '%-32s' "$name")${N} ${D}${desc}${N}"
             else
-                printf "   [${checked}] ${color}0x%08X %-28s ${D}%s${N}   \n" "$bitval" "$name" "$desc"
+                echo -e "    ${box} ${nc}$(printf '%-32s' "$name")${N} ${D}${desc}${N}"
             fi
         done
 
-        # Selected hex
-        local new_hex=$(printf "0x%08X" "$selected")
-        tput cup $((5 + total_flags + 1)) 0
-        printf " ${C}Selected Flags (will be written):${N} ${W}${new_hex}                                      ${N}\n"
-        printf " ${D}[↑↓] Move   [Enter] Toggle   [R] Recommended (0x80b1)   [S] Save & Flash   [Q] Quit${N}   \n"
+        echo
+        echo -e " ${D}──────────────────────────────────────────────────────${N}"
+        echo -e " ${D}↑↓${N} Move  ${D}Enter${N} Toggle  ${D}R${N} Recommended (0x80B1)  ${D}S${N} Flash  ${D}Q${N} Quit"
+        [[ -n "$flash_status" ]] && echo -e "\n $flash_status"
+    }
 
-        # Read key (better handling)
-        tread1 key
+    # ── Read a single keypress (handles ANSI arrows)
+    _gbb_readkey() {
+        local key esc
+        IFS= read -r -s -n1 key
+        if [[ "$key" == $'\x1b' ]]; then
+            IFS= read -r -s -n1 -t0.1 esc
+            if [[ "$esc" == '[' ]]; then
+                IFS= read -r -s -n1 -t0.1 key
+                case "$key" in
+                    A) echo "UP"   ;;
+                    B) echo "DOWN" ;;
+                    *) echo ""     ;;
+                esac
+                return
+            fi
+        fi
+        echo "$key"
+    }
+
+    # ── Main loop
+    while true; do
+        _gbb_draw
+        local key; key=$(_gbb_readkey)
 
         case "$key" in
-            "A"|"")  # Up
-                ((cursor--))
-                [[ $cursor -lt 0 ]] && cursor=$((total_flags-1))
+            UP)
+                (( cursor-- ))
+                (( cursor < 0 )) && cursor=$(( total - 1 ))
                 ;;
-            "B")     # Down
-                ((cursor++))
-                [[ $cursor -ge $total_flags ]] && cursor=0
+            DOWN)
+                (( cursor++ ))
+                (( cursor >= total )) && cursor=0
                 ;;
-            "")      # Enter key (toggle)
-                IFS='|' read -r _ mask _ _ <<< "${GBB_FLAGS[$cursor]}"
-                local bit=$(( $(printf "%d" "$mask") ))
-                if (( selected & bit )); then
-                    selected=$(( selected & ~bit ))
-                else
-                    selected=$(( selected | bit ))
-                fi
+            "")   # Enter
+                IFS='|' read -r _ mask _ <<< "${FLAGS[$cursor]}"
+                local bit=$(( mask ))
+                selected=$(( selected ^ bit ))   # XOR toggle — safe and correct
                 ;;
-            "r"|"R") # Recommended 0x80b1
-                selected=$(( 0x80b1 ))
+            r|R)
+                selected=$(( 0x80B1 ))
+                flash_status="${C}Preset applied: 0x000080B1${N}"
                 ;;
-            "s"|"S")
+            s|S)
                 if ! root_available; then
-                    tput cup $((5 + total_flags + 4)) 0
-                    echo -e " ${R}Root required to flash GBB flags!${N}"
-                    pause_key
+                    flash_status="${R}✗ Root required to flash GBB flags.${N}"
                     continue
                 fi
-                local final_hex=$(printf "0x%08X" "$selected")
-                tput cup $((5 + total_flags + 4)) 0
-                echo -e "\n ${Y}Writing GBB flags ${final_hex} ...${N}"
-                root_run "futility gbb -s --flash --flags=${final_hex}" 2>&1 | while IFS= read -r l; do echo "   $l"; done
-                echo -e "\n ${G}Successfully written! Reboot to apply.${N}"
-                pause_key
-                return
+                local final_hex; final_hex=$(printf '0x%08X' "$selected")
+                flash_status="${Y}Writing ${final_hex} …${N}"
+                _gbb_draw
+                local out
+                out=$(root_run "futility gbb --flash --set --flags=${final_hex}" 2>&1)
+                if [[ $? -eq 0 ]]; then
+                    flash_status="${G}✓ GBB flags written: ${final_hex}. Reboot to apply.${N}"
+                else
+                    flash_status="${R}✗ Flash failed: ${out}${N}"
+                fi
                 ;;
-            "q"|"Q")
-                tput cup $((5 + total_flags + 4)) 0
-                echo -e "\n ${D}Cancelled.${N}"
+            q|Q)
+                clear
                 return
                 ;;
         esac
     done
 }
-
 pg_vpd() {
     while true; do
         banner; echo -e "  ${W}── VPD Editor ───────────────────────────────────────${N}\n"
