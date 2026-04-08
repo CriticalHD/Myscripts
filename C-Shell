@@ -1,5 +1,5 @@
 #!/bin/bash
-# cshell v5.1 — Custom ChromeOS Shell
+# cshell v5.2 — Custom ChromeOS Shell
 # Landlock-safe install: writes via stateful partition + python3 fallback
 
 export LANG=en_US.UTF-8
@@ -16,7 +16,7 @@ ROOTFS_SHELL="/usr/bin/cshell_rootfs"
 INIT_SCRIPT="/etc/init/cshell-restore.conf"
 UI_CONF="/etc/init/ui.conf"
 OVERRIDE_SO="/usr/local/bin/minioverride.so"
-VERSION="5.1"
+VERSION="5.2"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
 C='\033[0;36m'; W='\033[1;37m'; D='\033[2m'
@@ -679,9 +679,9 @@ pg_crossystem_flags() {
         # Get all parameters with descriptions if possible
         local all_output
         if crossystem --all &>/dev/null; then
-            all_output=$(crossystem --all 2>/dev/null)
+            all_output=$(sudo crossystem --all 2>/dev/null)
         else
-            all_output=$(crossystem 2>/dev/null)
+            all_output=$(sudo crossystem 2>/dev/null)
         fi
 
         # Separate into RO and RW
@@ -768,9 +768,9 @@ pg_crossystem_flags() {
                 banner
                 echo -e "  ${W}Full crossystem output:${N}\n"
                 if crossystem --all &>/dev/null; then
-                    crossystem --all 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+                    sudo crossystem --all 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
                 else
-                    crossystem 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
+                    sudo crossystem 2>/dev/null | while IFS= read -r l; do echo "  $l"; done
                 fi
                 pause_key ;;
                 
