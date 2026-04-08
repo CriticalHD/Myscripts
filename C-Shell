@@ -1,5 +1,5 @@
 #!/bin/bash
-# cshell v6.8 — Custom ChromeOS Shell
+# cshell v6.9 — Custom ChromeOS Shell
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -15,7 +15,7 @@ ROOTFS_SHELL="/usr/bin/cshell_rootfs"
 INIT_SCRIPT="/etc/init/cshell-restore.conf"
 UI_CONF="/etc/init/ui.conf"
 OVERRIDE_SO="/usr/local/bin/minioverride.so"
-VERSION="6.8"
+VERSION="6.9"
 UPDATE_URL="https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/C-Shell"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
@@ -799,10 +799,12 @@ pg_gbb() {
     local first_draw=1
 
     # ── Read current flags from device
-    if root_available; then
+if root_available; then
     local raw=""
-    raw=$(root_run "flashrom -p internal -i GBB -r /tmp/gbb 2>/dev/null && futility gbb --flash -g --flags /tmp/gbb 2>/dev/null; rm -f /tmp/gbb" 2>/dev/null \
+    root_run "flashrom -p internal -i GBB -r /tmp/gbb" >/dev/null 2>&1
+    raw=$(root_run "futility gbb --flash -g --flags /tmp/gbb 2>/dev/null" 2>/dev/null \
         | grep -oP '0x[0-9A-Fa-f]+' | tail -1)
+    root_run "rm -f /tmp/gbb" 2>/dev/null
     if [[ -n "$raw" ]]; then
         current_hex="$raw"
         selected=$(printf '%d' "$raw")
