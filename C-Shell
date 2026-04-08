@@ -768,60 +768,123 @@ pg_gbb() {
     banner
     echo -e " ${W}── GBB Flags (Google Binary Block) ───────────────────${N}\n"
 
-    local cur_flags="unknown"
+    # ====================== FLAG DEFINITIONS ======================
+    declare -a GBB_FLAGS=(
+        "DEV_SCREEN_SHORT_DELAY|0x00000001|Reduce dev screen delay to 2s (no beep)|1"
+        "LOAD_OPTION_ROMS|0x00000002|Load option ROMs from arbitrary PCI devices|0"
+        "ENABLE_ALTERNATE_OS|0x00000004|Boot non-ChromeOS kernel|0"
+        "FORCE_DEV_SWITCH_ON|0x00000008|Force dev mode on (ignores hardware switch)|1"
+        "FORCE_DEV_BOOT_USB|0x00000010|Allow USB boot even if dev_boot_usb=0|1"
+        "DISABLE_ROLLBACK_CHECK|0x00000020|Disable firmware rollback protection|1"
+        "ENTER_TRIGGERS_TONORM|0x00000040|Enter key triggers dev → tonorm|1"
+        "FORCE_DEV_BOOT_ALTFW|0x00000080|Allow altfw/legacy even if dev_boot_altfw=0|1"
+        "RUNNING_FAFT|0x00000100|Deprecated FAFT test flag (do not use)|0"
+        "DISABLE_EC_SOFTWARE_SYNC|0x00000200|Disable EC software sync|1"
+        "DEFAULT_DEV_BOOT_ALTFW|0x00000400|Default to altfw on dev screen timeout|1"
+        "DISABLE_AUXFW_SOFTWARE_SYNC|0x00000800|Disable auxiliary firmware software sync|1"
+        "DISABLE_LID_SHUTDOWN|0x00001000|Disable shutdown on lid close|1"
+        "FORCE_UNLOCK_FASTBOOT|0x00002000|Full fastboot capability even in verified mode|1"
+        "FORCE_MANUAL_RECOVERY|0x00004000|Always assume manual recovery|1"
+        "DISABLE_FWMP|0x00008000|Ignore Firmware Management Parameters|1"
+        "ENABLE_UDC|0x00010000|Enable USB Device Controller|1"
+        "FORCE_CSE_SYNC|0x00020000|Force CSE sync even if versions match|1"
+    )
+
+    local current_hex="0x00000000"
+    local selected=0
+
+    # Read current flags from device
     if root_available; then
         local tmpgbb; tmpgbb=$(mktemp /tmp/gbb.XXXXXX)
         root_run "flashrom -p internal -i GBB -r $tmpgbb 2>/dev/null" >/dev/null 2>&1
-        [[ -s "$tmpgbb" ]] && cur_flags=$(futility gbb --get --flags "$tmpgbb" 2>/dev/null | awk '{print $NF}')
-        [[ -z "$cur_flags" || "$cur_flags" == "unknown" ]] && \
-            cur_flags=$(root_run "futility gbb --get --flags 2>/dev/null" 2>/dev/null | awk '{print $NF}')
-        rm -f "$tmpgbb"
-    fi
-
-    echo -e " ${C}Current GBB Flags :${N} ${W}${cur_flags:-unknown}${N}"
-    echo -e " ${C}Popular dev combo :${N} ${G}0x80b1${N} (Short delay + Ignore FWMP + USB + No Rollback + AltFW)\n"
-
-    echo -e " ${W}All Available GBB Flags:${N}"
-    printf " ${C}0x000001${N}  DEV_SCREEN_SHORT_DELAY          ${D}Reduce dev screen to 2s (no beep)${N}\n"
-    printf " ${C}0x000002${N}  LOAD_OPTION_ROMS                ${R}[Unsupported]${N} Load option ROMs from PCI devices\n"
-    printf " ${C}0x000004${N}  ENABLE_ALTERNATE_OS             ${R}[Unsupported]${N} Boot non-ChromeOS kernel\n"
-    printf " ${C}0x000008${N}  FORCE_DEV_SWITCH_ON             Force dev mode on (doesn't bypass FWMP)\n"
-    printf " ${C}0x000010${N}  FORCE_DEV_BOOT_USB              Allow USB boot even if dev_boot_usb=0\n"
-    printf " ${C}0x000020${N}  DISABLE_FW_ROLLBACK_CHECK       Disable firmware rollback protection\n"
-    printf " ${C}0x000040${N}  ENTER_TRIGGERS_TONORM           Enter key triggers dev → tonorm\n"
-    printf " ${C}0x000080${N}  FORCE_DEV_BOOT_ALTFW            Allow altfw even if dev_boot_altfw=0\n"
-    printf " ${C}0x000100${N}  DEPRECATED_RUNNING_FAFT         ${R}[Unsupported]${N} FAFT test flag (do not use)\n"
-    printf " ${C}0x000200${N}  DISABLE_EC_SOFTWARE_SYNC        Disable EC software sync\n"
-    printf " ${C}0x000400${N}  DEFAULT_DEV_BOOT_ALTFW          Default to altfw on dev screen timeout\n"
-    printf " ${C}0x000800${N}  DISABLE_AUXFW_SOFTWARE_SYNC     Disable auxiliary firmware software sync\n"
-    printf " ${C}0x001000${N}  DISABLE_LID_SHUTDOWN            Disable shutdown on lid close\n"
-    printf " ${C}0x002000${N}  FORCE_UNLOCK_FASTBOOT           Full fastboot even in verified mode\n"
-    printf " ${C}0x004000${N}  FORCE_MANUAL_RECOVERY           Always assume manual recovery\n"
-    printf " ${C}0x008000${N}  DISABLE_FWMP                    Ignore Firmware Management Parameters\n"
-    printf " ${C}0x010000${N}  ENABLE_UDC                      Enable USB Device Controller\n"
-    printf " ${C}0x020000${N}  FORCE_CSE_SYNC                  Force CSE sync even if same version\n"
-
-    echo -e "\n ${D}Note: Flags marked [Unsupported] have no effect on modern firmware.${N}"
-
-    if root_available; then
-        echo -e "\n ${D}[S] Set new GBB flags   [Any other key] Back${N}"
-        local k; tread1 k
-        if [[ "$k" == "s" || "$k" == "S" ]]; then
-            echo -ne "\n ${Y}Enter new flags (hex e.g. 0x80b1):${N} "
-            local fl; tread fl
-            [[ -z "$fl" ]] && { echo -e " ${D}Cancelled.${N}"; pause_key; return; }
-
-            echo -e "\n ${W}Writing GBB flags ${fl} ...${N}"
-            root_run "futility gbb -s --flash --flags=${fl}" 2>&1 | while IFS= read -r l; do echo " $l"; done
-            echo -e "\n ${G}Done! Reboot to apply changes.${N}"
-            pause_key
-            return
+        if [[ -s "$tmpgbb" ]]; then
+            current_hex=$(futility gbb --get --flags "$tmpgbb" 2>/dev/null | awk '{print $NF}')
+        else
+            current_hex=$(root_run "futility gbb --get --flags 2>/dev/null" 2>/dev/null | awk '{print $NF}')
         fi
-    else
-        echo -e "\n ${Y}Root required to modify GBB flags.${N}"
-        pause_key
+        rm -f "$tmpgbb"
+        [[ -z "$current_hex" || "$current_hex" == "0" ]] && current_hex="0x00000000"
+        selected=$(printf "%d" "$current_hex")
     fi
+
+    echo -e " ${C}Current GBB Flags :${N} ${W}${current_hex}${N}\n"
+
+    local cursor=0
+    local total_flags=${#GBB_FLAGS[@]}
+
+    while true; do
+        clear
+        banner
+        echo -e " ${W}── GBB Flags Editor ────────────────────────────────${N}\n"
+        echo -e " ${C}Current on device :${N} ${W}${current_hex}${N}\n"
+
+        # Display flags
+        for i in "${!GBB_FLAGS[@]}"; do
+            IFS='|' read -r name mask desc supported <<< "${GBB_FLAGS[$i]}"
+            local bitval=$(( $(printf "%d" "$mask") ))
+            local checked=" "
+            local color="${N}"
+
+            if (( selected & bitval )); then
+                checked="${G}✓${N}"
+                color="${G}"
+            fi
+
+            if (( i == cursor )); then
+                printf " ${Y}→${N} [${checked}] ${color}0x%08X %-28s ${D}%s${N}\n" "$bitval" "$name" "$desc"
+            else
+                printf "   [${checked}] ${color}0x%08X %-28s ${D}%s${N}\n" "$bitval" "$name" "$desc"
+            fi
+        done
+
+        local new_hex=$(printf "0x%08X" "$selected")
+        echo -e "\n ${C}Selected Flags (will be written):${N} ${W}${new_hex}${N}"
+
+        echo -e "\n ${D}[↑↓] Move   [Enter] Toggle   [R] Recommended Flags (0x80b1)   [S] Save & Flash   [Q] Quit${N}"
+
+        local key
+        tread1 key
+
+        case "$key" in
+            "A"|"") ((cursor--)); [[ $cursor -lt 0 ]] && cursor=$((total_flags-1)) ;;
+            "B")    ((cursor++)); [[ $cursor -ge $total_flags ]] && cursor=0 ;;
+            "")     # Toggle
+                IFS='|' read -r _ mask _ _ <<< "${GBB_FLAGS[$cursor]}"
+                local bit=$(( $(printf "%d" "$mask") ))
+                if (( selected & bit )); then
+                    selected=$(( selected & ~bit ))
+                else
+                    selected=$(( selected | bit ))
+                fi
+                ;;
+            "r"|"R")   # Recommended Preset - EXACTLY 0x80b1
+                selected=$(( 0x80b1 ))
+                echo -e "\n ${G}Loaded Recommended Flags (0x80b1)${N}"
+                echo -e " ${D}→ Short Delay + USB + No Rollback + AltFW + Disable FWMP${N}"
+                sleep 1.2
+                ;;
+            "s"|"S")
+                if ! root_available; then
+                    echo -e "\n ${R}Root required to flash GBB flags!${N}"
+                    pause_key
+                    continue
+                fi
+                local final_hex=$(printf "0x%08X" "$selected")
+                echo -e "\n ${Y}Writing GBB flags ${final_hex} ...${N}"
+                root_run "futility gbb -s --flash --flags=${final_hex}" 2>&1 | while IFS= read -r l; do echo "   $l"; done
+                echo -e "\n ${G}GBB flags successfully updated!${N}"
+                echo -e " ${D}Reboot for changes to take effect.${N}"
+                pause_key
+                return
+                ;;
+            "q"|"Q")
+                echo -e "\n ${D}Cancelled.${N}"
+                return
+                ;;
+        esac
+    done
 }
+
 pg_vpd() {
     while true; do
         banner; echo -e "  ${W}── VPD Editor ───────────────────────────────────────${N}\n"
