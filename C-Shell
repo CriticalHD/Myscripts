@@ -1,5 +1,5 @@
 #!/bin/bash
-# cshell v6.6 — Custom ChromeOS Shell
+# cshell v6.7 — Custom ChromeOS Shell
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -15,7 +15,7 @@ ROOTFS_SHELL="/usr/bin/cshell_rootfs"
 INIT_SCRIPT="/etc/init/cshell-restore.conf"
 UI_CONF="/etc/init/ui.conf"
 OVERRIDE_SO="/usr/local/bin/minioverride.so"
-VERSION="6.6"
+VERSION="6.7"
 UPDATE_URL="https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/C-Shell"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
@@ -65,13 +65,13 @@ confirm_yn() {
 safe_write() {
     local src="$1" dest="$2"
     # Method 1: direct write (works if landlock not active or minioverride installed)
-    cp "$src" "$dest" 2>/dev/null && [[ -s "$dest" ]] && return 0
+    sudo cp "$src" "$dest" 2>/dev/null && [[ -s "$dest" ]] && return 0
     # Method 2: write via stateful partition path (bypasses landlock path restriction)
     local sp_dest="${dest/\/usr\/local\/bin\//\/mnt\/stateful_partition\/dev_image\/bin\/}"
     sp_dest="${sp_dest/\/usr\/local\//\/mnt\/stateful_partition\/dev_image\/}"
     if [[ "$sp_dest" != "$dest" ]]; then
-        mkdir -p "$(dirname "$sp_dest")" 2>/dev/null
-        cp "$src" "$sp_dest" 2>/dev/null && [[ -s "$sp_dest" ]] && {
+        sudo mkdir -p "$(dirname "$sp_dest")" 2>/dev/null
+        sudo cp "$src" "$sp_dest" 2>/dev/null && [[ -s "$sp_dest" ]] && {
             # Verify the bind mount shows it
             [[ -s "$dest" ]] && return 0
         }
