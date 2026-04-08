@@ -1278,7 +1278,7 @@ menu_system_mgmt() {
 #  FILE BROWSER — paginated, search, execute .sh, no duplication
 # ════════════════════════════════════════════════════════════════
 pg_file_browser() {
-    local cur="${1:-/}" PAGE=15 off=0 search=""
+    local cur="${1:-/}" PAGE=19 off=0 search=""
 
     while true; do
         # Build file list
@@ -1546,7 +1546,7 @@ pg_credits() {
     echo -e "  ${D}  K-Patch, SAUB, R-Patch, CB-WP${N}\n"
     echo -e "  ${W}Built on:${N}"
     echo -e "  ${G}  mush / murkmod${N}   github.com/rainestorme/murkmod"
-    echo -e "  ${D}  Root SSH tunnel pattern${N}\n"
+    echo -e "  ${D}  Root SSH tunnel pattern and idea${N}\n"
     echo -e "  ${G}  sudoCrosh${N}        github.com/shadowed1/sudoCrosh"
     echo -e "  ${D}  Prebuilt minioverride.so${N}\n"
     echo -e "  ${G}  Sucrose${N}          github.com/shadowed1/Sucrose"
