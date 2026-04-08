@@ -1,5 +1,5 @@
 #!/bin/bash
-# cshell v6.1 — Custom ChromeOS Shell
+# cshell v6.2 — Custom ChromeOS Shell
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -15,7 +15,7 @@ ROOTFS_SHELL="/usr/bin/cshell_rootfs"
 INIT_SCRIPT="/etc/init/cshell-restore.conf"
 UI_CONF="/etc/init/ui.conf"
 OVERRIDE_SO="/usr/local/bin/minioverride.so"
-VERSION="6.1"
+VERSION="6.2"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
 C='\033[0;36m'; W='\033[1;37m'; D='\033[2m'
@@ -793,7 +793,7 @@ pg_gbb() {
     local current_hex="0x00000000"
     local selected=0
 
-    # Read current flags from device
+    # Read current flags
     if root_available; then
         local tmpgbb; tmpgbb=$(mktemp /tmp/gbb.XXXXXX)
         root_run "flashrom -p internal -i GBB -r $tmpgbb 2>/dev/null" >/dev/null 2>&1
@@ -807,48 +807,54 @@ pg_gbb() {
         selected=$(printf "%d" "$current_hex")
     fi
 
-    echo -e " ${C}Current GBB Flags :${N} ${W}${current_hex}${N}\n"
-
     local cursor=0
     local total_flags=${#GBB_FLAGS[@]}
+    local key
+
+    # Initial draw
+    clear
+    banner
+    echo -e " ${W}── GBB Flags Editor ────────────────────────────────${N}\n"
+    echo -e " ${C}Current on device :${N} ${W}${current_hex}${N}\n"
 
     while true; do
-        clear
-        banner
-        echo -e " ${W}── GBB Flags Editor ────────────────────────────────${N}\n"
-        echo -e " ${C}Current on device :${N} ${W}${current_hex}${N}\n"
+        # Redraw only the list + selected value (smooth)
+        tput cup 5 0   # Move cursor to start of flag list
 
-        # Display flags
         for i in "${!GBB_FLAGS[@]}"; do
             IFS='|' read -r name mask desc supported <<< "${GBB_FLAGS[$i]}"
             local bitval=$(( $(printf "%d" "$mask") ))
             local checked=" "
             local color="${N}"
 
-            if (( selected & bitval )); then
-                checked="${G}✓${N}"
-                color="${G}"
-            fi
+            (( selected & bitval )) && { checked="${G}✓${N}"; color="${G}"; }
 
             if (( i == cursor )); then
-                printf " ${Y}→${N} [${checked}] ${color}0x%08X %-28s ${D}%s${N}\n" "$bitval" "$name" "$desc"
+                printf " ${Y}→${N} [${checked}] ${color}0x%08X %-28s ${D}%s${N}   \n" "$bitval" "$name" "$desc"
             else
-                printf "   [${checked}] ${color}0x%08X %-28s ${D}%s${N}\n" "$bitval" "$name" "$desc"
+                printf "   [${checked}] ${color}0x%08X %-28s ${D}%s${N}   \n" "$bitval" "$name" "$desc"
             fi
         done
 
+        # Selected hex
         local new_hex=$(printf "0x%08X" "$selected")
-        echo -e "\n ${C}Selected Flags (will be written):${N} ${W}${new_hex}${N}"
+        tput cup $((5 + total_flags + 1)) 0
+        printf " ${C}Selected Flags (will be written):${N} ${W}${new_hex}                                      ${N}\n"
+        printf " ${D}[↑↓] Move   [Enter] Toggle   [R] Recommended (0x80b1)   [S] Save & Flash   [Q] Quit${N}   \n"
 
-        echo -e "\n ${D}[↑↓] Move   [Enter] Toggle   [R] Recommended Flags (0x80b1)   [S] Save & Flash   [Q] Quit${N}"
-
-        local key
+        # Read key (better handling)
         tread1 key
 
         case "$key" in
-            "A"|"") ((cursor--)); [[ $cursor -lt 0 ]] && cursor=$((total_flags-1)) ;;
-            "B")    ((cursor++)); [[ $cursor -ge $total_flags ]] && cursor=0 ;;
-            "")     # Toggle
+            "A"|"")  # Up
+                ((cursor--))
+                [[ $cursor -lt 0 ]] && cursor=$((total_flags-1))
+                ;;
+            "B")     # Down
+                ((cursor++))
+                [[ $cursor -ge $total_flags ]] && cursor=0
+                ;;
+            "")      # Enter key (toggle)
                 IFS='|' read -r _ mask _ _ <<< "${GBB_FLAGS[$cursor]}"
                 local bit=$(( $(printf "%d" "$mask") ))
                 if (( selected & bit )); then
@@ -857,27 +863,26 @@ pg_gbb() {
                     selected=$(( selected | bit ))
                 fi
                 ;;
-            "r"|"R")   # Recommended Preset - EXACTLY 0x80b1
+            "r"|"R") # Recommended 0x80b1
                 selected=$(( 0x80b1 ))
-                echo -e "\n ${G}Loaded Recommended Flags (0x80b1)${N}"
-                echo -e " ${D}→ Short Delay + USB + No Rollback + AltFW + Disable FWMP${N}"
-                sleep 1.2
                 ;;
             "s"|"S")
                 if ! root_available; then
-                    echo -e "\n ${R}Root required to flash GBB flags!${N}"
+                    tput cup $((5 + total_flags + 4)) 0
+                    echo -e " ${R}Root required to flash GBB flags!${N}"
                     pause_key
                     continue
                 fi
                 local final_hex=$(printf "0x%08X" "$selected")
+                tput cup $((5 + total_flags + 4)) 0
                 echo -e "\n ${Y}Writing GBB flags ${final_hex} ...${N}"
                 root_run "futility gbb -s --flash --flags=${final_hex}" 2>&1 | while IFS= read -r l; do echo "   $l"; done
-                echo -e "\n ${G}GBB flags successfully updated!${N}"
-                echo -e " ${D}Reboot for changes to take effect.${N}"
+                echo -e "\n ${G}Successfully written! Reboot to apply.${N}"
                 pause_key
                 return
                 ;;
             "q"|"Q")
+                tput cup $((5 + total_flags + 4)) 0
                 echo -e "\n ${D}Cancelled.${N}"
                 return
                 ;;
