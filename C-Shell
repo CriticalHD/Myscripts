@@ -1,5 +1,5 @@
 #!/bin/bash
-# cshell v6.7 — Custom ChromeOS Shell
+# cshell v6.8 — Custom ChromeOS Shell
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -15,7 +15,7 @@ ROOTFS_SHELL="/usr/bin/cshell_rootfs"
 INIT_SCRIPT="/etc/init/cshell-restore.conf"
 UI_CONF="/etc/init/ui.conf"
 OVERRIDE_SO="/usr/local/bin/minioverride.so"
-VERSION="6.7"
+VERSION="6.8"
 UPDATE_URL="https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/C-Shell"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
@@ -800,19 +800,14 @@ pg_gbb() {
 
     # ── Read current flags from device
     if root_available; then
-        local tmpgbb raw=""
-        tmpgbb=$(mktemp /tmp/gbb.XXXXXX)
-        root_run "flashrom -p internal -i GBB -r '$tmpgbb'" >/dev/null 2>&1
-        if [[ -s "$tmpgbb" ]]; then
-            raw=$(futility gbb --get --flags "$tmpgbb" 2>/dev/null | grep -oP '0x[0-9A-Fa-f]+')
-        fi
-        rm -f "$tmpgbb"
-        [[ -z "$raw" ]] && raw=$(root_run "futility gbb --get --flags" 2>/dev/null | grep -oP '0x[0-9A-Fa-f]+')
-        if [[ -n "$raw" ]]; then
-            current_hex="$raw"
-            selected=$(printf '%d' "$raw")
-        fi
+    local raw=""
+    raw=$(root_run "flashrom -p internal -i GBB -r /tmp/gbb 2>/dev/null && futility gbb --flash -g --flags /tmp/gbb 2>/dev/null; rm -f /tmp/gbb" 2>/dev/null \
+        | grep -oP '0x[0-9A-Fa-f]+' | tail -1)
+    if [[ -n "$raw" ]]; then
+        current_hex="$raw"
+        selected=$(printf '%d' "$raw")
     fi
+fi
 
     # ── Draw (full clear on first, in-place on subsequent)
     _gbb_draw() {
@@ -1544,9 +1539,12 @@ menu_power() {
 #  AUTO UPDATE
 # ════════════════════════════════════════════════════════════════
 _cshell_check_update_bg() {
-    # Runs silently in background on startup — writes notice file if update available
     local remote_ver
-    remote_ver=$(curl -fsSL "$UPDATE_URL" 2>/dev/null | grep -m1 '^VERSION=' | cut -d'"' -f2)
+    if root_available; then
+        remote_ver=$(root_run "curl -fsSL '$UPDATE_URL' 2>/dev/null" 2>/dev/null | grep -m1 '^VERSION=' | cut -d'"' -f2)
+    else
+        remote_ver=$(curl -fsSL "$UPDATE_URL" 2>/dev/null | grep -m1 '^VERSION=' | cut -d'"' -f2)
+    fi
     [[ -n "$remote_ver" && "$remote_ver" != "$VERSION" ]] && \
         echo "$remote_ver" > /tmp/.cshell_update_avail
 }
@@ -1558,7 +1556,14 @@ pg_update() {
     echo -e " ${Y}Checking for updates...${N}\n"
 
     local tmp; tmp=$(mktemp /tmp/cshell_update.XXXXXX)
-    if ! curl -fsSL "$UPDATE_URL" -o "$tmp" 2>/dev/null || [[ ! -s "$tmp" ]]; then
+    local dl_ok=0
+    if root_available; then
+        root_run "curl -fsSL '$UPDATE_URL' -o '$tmp' 2>/dev/null" && [[ -s "$tmp" ]] && dl_ok=1
+    else
+        curl -fsSL "$UPDATE_URL" -o "$tmp" 2>/dev/null && [[ -s "$tmp" ]] && dl_ok=1
+    fi
+
+    if [[ $dl_ok -eq 0 ]]; then
         echo -e " ${R}✗ Could not reach update server.${N}"
         rm -f "$tmp"; pause_key; return
     fi
