@@ -1,5 +1,5 @@
 #!/bin/bash
-# cshell v5.8 — Custom ChromeOS Shell
+# cshell v5.9 — Custom ChromeOS Shell
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -15,7 +15,7 @@ ROOTFS_SHELL="/usr/bin/cshell_rootfs"
 INIT_SCRIPT="/etc/init/cshell-restore.conf"
 UI_CONF="/etc/init/ui.conf"
 OVERRIDE_SO="/usr/local/bin/minioverride.so"
-VERSION="5.8"
+VERSION="5.9"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
 C='\033[0;36m'; W='\033[1;37m'; D='\033[2m'
@@ -987,13 +987,13 @@ pg_tpm() {
         printf " ${C}%-22s${N} %s\n" "$key" "$(crossystem "$key" 2>/dev/null || echo "n/a")"
     done
 
-    # Security Chip Detection
+    # Security Chip Detection (Cr50 vs Ti50)
     echo -e "\n ${W}Security Chip:${N}"
     local tpm_chip="Unknown"
     local chip_info=""
 
-    if command -v sudo gsctool &>/dev/null; then
-        if gsctool -a -I 2>/dev/null | grep -q "AllowUnverifiedRo"; then
+    if command -v gsctool &>/dev/null; then
+        if sudo gsctool -a -I 2>/dev/null | grep -q "AllowUnverifiedRo"; then
             tpm_chip="Ti50"
             chip_info="TPM 2.0 - Newer Titan security chip"
         else
@@ -1005,24 +1005,25 @@ pg_tpm() {
     printf " ${C}%-22s${N} %s\n" "Chip" "$tpm_chip"
     [[ -n "$chip_info" ]] && printf " ${D}   └─ %s${N}\n" "$chip_info"
 
-    # trunks_client --status (Best human-readable info)
-    if root_available && command -v sudo trunks_client &>/dev/null; then
-        echo -e "\n ${W}trunks_client Status (Full):${N}"
+    # trunks_client --status
+    if root_available && command -v trunks_client &>/dev/null; then
+        echo -e "\n ${W}trunks_client Status:${N}"
+
+        # Ensure trunksd is running before querying
+        sudo initctl start trunksd >/dev/null 2>&1 || true
+        sleep 0.6
 
         local status
-        sudo initctl stop trunksd >/dev/null 2>&1 || true
-        sleep 0.5
         status=$(sudo trunks_client --status 2>&1)
-        sudo initctl start trunksd >/dev/null 2>&1 || true
 
         # Pretty print with colors
         echo "$status" | while IFS= read -r line; do
             if [[ "$line" == *"true"* ]]; then
-                printf " ${G}   %-35s${N}\n" "$line"
+                printf " ${G}   %-40s${N}\n" "$line"
             elif [[ "$line" == *"false"* ]]; then
-                printf " ${Y}   %-35s${N}\n" "$line"
+                printf " ${Y}   %-40s${N}\n" "$line"
             elif [[ "$line" == *":"* ]]; then
-                printf " ${C}   %-35s${N}\n" "$line"
+                printf " ${C}   %-40s${N}\n" "$line"
             else
                 echo "   $line"
             fi
@@ -1182,15 +1183,15 @@ menu_system_mgmt() {
 #  FILE BROWSER — paginated, search, execute .sh, no duplication
 # ════════════════════════════════════════════════════════════════
 pg_file_browser() {
-    local cur="${1:-/}" PAGE=20 off=0 search=""
+    local cur="${1:-/}" PAGE=15 off=0 search=""
 
     while true; do
+        # Build file list
         local all=()
         while IFS= read -r name; do
             [[ -z "$name" ]] && continue
             local fp="${cur%/}/${name}"
 
-            # Search filter
             [[ -n "$search" ]] && { echo "$name" | grep -qi "$search" || continue; }
 
             if [[ -d "$fp" ]]; then
@@ -1201,101 +1202,90 @@ pg_file_browser() {
             else
                 all+=("❓ ${name}")
             fi
-        done < <(ls -1p "$cur" 2>/dev/null | sed 's/\///' )   # Clean trailing / from ls -p
+        done < <(ls -1p "$cur" 2>/dev/null | sed 's/\/$//')
 
         local total=${#all[@]}
         local page_items=()
         local i
-        for (( i=off; i<off+PAGE && i<total; i++ )); do
+        for (( i=off; i < off+PAGE && i < total; i++ )); do
             page_items+=("${all[$i]}")
         done
 
         local showing=${#page_items[@]}
 
-        # Navigation items
+        # Navigation
         local nav_items=()
-        [[ "$cur" != "/" ]] && nav_items+=("↑ Up to parent directory")
-        [[ -n "$search" ]] && nav_items+=("✕ Clear search (current: ${search})") || nav_items+=("🔍 Search in current folder")
-        (( off+PAGE < total )) && nav_items+=("↓ Next page ($(( total - off - PAGE )) remaining)")
-        (( off > 0 )) && nav_items+=("↑ Previous page")
-        nav_items+=("← Exit file browser")
+        [[ "$cur" != "/" ]] && nav_items+=("↑  Up to parent")
+        [[ -n "$search" ]] && nav_items+=("✕  Clear search") || nav_items+=("🔍  Search here")
+        (( off + PAGE < total )) && nav_items+=("↓  Next page ($((total - off - PAGE)) left)")
+        (( off > 0 )) && nav_items+=("↑  Previous page")
+        nav_items+=("←  Exit browser")
 
-        local pg="$(( off+1 ))-$(( off+PAGE < total ? off+PAGE : total ))/${total}"
-        [[ -n "$search" ]] && pg="${pg}  [Filter: ${search}]"
+        local pg="$((off+1))-$((off+PAGE < total ? off+PAGE : total))/${total}"
+        [[ -n "$search" ]] && pg="${pg} [${search}]"
 
-        # Combine items
-        local all_items=("${page_items[@]}" "────────────────────────────────────────────" "${nav_items[@]}")
+        # Combine everything
+        local all_items=("${page_items[@]}" "────────────────────────────────────" "${nav_items[@]}")
 
-        draw_menu "File Browser → ${cur}   [${pg}]" "${all_items[@]}"
+        draw_menu "File Browser → ${cur}  [${pg}]" "${all_items[@]}"
         [[ $MENU_RESULT -eq -1 ]] && return
 
         local idx=$MENU_RESULT
 
+        # === FILE / FOLDER SELECTED ===
         if (( idx < showing )); then
-            # User selected a file or directory
             local chosen="${page_items[$idx]}"
-            local item_name="${chosen:2}"          # Remove emoji + space
-            item_name="${item_name%/}"             # Remove trailing / if any
-
+            local item_name="${chosen:2}"      # remove emoji + space
+            item_name="${item_name%/}"
             local fullpath="${cur%/}/${item_name}"
 
             if [[ -d "$fullpath" ]]; then
                 cur="$fullpath"
                 off=0
                 search=""
-            else
-                # File actions menu
-                local is_x=0
-                [[ -x "$fullpath" || "${item_name##*.}" =~ ^(sh|bash|py)$ ]] && is_x=1
-
-                local opts=()
-                [[ $is_x -eq 1 ]] && opts+=("▶ Execute script")
-                opts+=("📜 View tail (last 50 lines)" 
-                       "📜 View head (first 50 lines)" 
-                       "✏ Edit file" 
-                       "🗑 Delete file" 
-                       "ℹ File info" 
-                       "📋 Copy full path" 
-                       "← Back")
-
-                draw_menu "${item_name}" "${opts[@]}"
-                local fi=$MENU_RESULT
-                [[ $fi -eq -1 ]] && continue
-
-                [[ $is_x -eq 1 && $fi -eq 0 ]] && {
-                    banner
-                    echo -e " ${Y}Executing ${fullpath} ...${N}\n"
-                    bash "$fullpath"
-                    echo -e "\n ${G}Execution finished.${N}"
-                    pause_key
-                    continue
-                }
-
-                [[ $is_x -eq 1 ]] && (( fi-- ))
-
-                case $fi in
-                    0) banner; tail -n 50 "$fullpath" 2>/dev/null | while IFS= read -r l; do echo " $l"; done; pause_key ;;
-                    1) banner; head -n 50 "$fullpath" 2>/dev/null | while IFS= read -r l; do echo " $l"; done; pause_key ;;
-                    2) root_available && root_run "nano '$fullpath' 2>/dev/null || vi '$fullpath'" \
-                           || { nano "$fullpath" 2>/dev/null || vi "$fullpath"; } ;;
-                    3) confirm_yn "Delete ${fullpath}?" && {
-                           root_run "rm -f '$fullpath'" && echo -e " ${G}File deleted.${N}"
-                       }; pause_key ;;
-                    4) banner; ls -lah "$fullpath" 2>/dev/null; file "$fullpath" 2>/dev/null; pause_key ;;
-                    5) echo -e " ${W}Full path:${N} ${fullpath}"; pause_key ;;
-                esac
+                continue
             fi
 
+            # File selected - show actions
+            local ext="${item_name##*.}"
+            local is_x=0
+            [[ -x "$fullpath" || "$ext" =~ ^(sh|bash|py)$ ]] && is_x=1
+
+            local opts=()
+            [[ $is_x -eq 1 ]] && opts+=("▶ Execute")
+            opts+=("📜 Tail -50" "📜 Head -50" "✏ Edit" "🗑 Delete" "ℹ Info" "📋 Copy path" "← Back")
+
+            draw_menu "$item_name" "${opts[@]}"
+            local fi=$MENU_RESULT
+            [[ $fi -eq -1 ]] && continue
+
+            [[ $is_x -eq 1 ]] && (( fi > 0 )) && (( fi-- ))
+
+            case $fi in
+                0) 
+                    if [[ $is_x -eq 1 ]]; then
+                        banner; echo -e " ${Y}Running ${fullpath}...${N}\n"
+                        bash "$fullpath"; pause_key
+                    else
+                        banner; tail -n 50 "$fullpath" 2>/dev/null | while IFS= read -r l; do echo " $l"; done; pause_key
+                    fi ;;
+                1) banner; head -n 50 "$fullpath" 2>/dev/null | while IFS= read -r l; do echo " $l"; done; pause_key ;;
+                2) root_available && root_run "nano '$fullpath' || vi '$fullpath'" || { nano "$fullpath" 2>/dev/null || vi "$fullpath"; } ;;
+                3) confirm_yn "Delete ${fullpath}?" && root_run "rm -f '$fullpath'" && echo -e " ${G}Deleted.${N}"; pause_key ;;
+                4) banner; ls -lah "$fullpath"; file "$fullpath"; pause_key ;;
+                5) echo -e " ${W}${fullpath}${N}"; pause_key ;;
+            esac
+
         else
-            # Navigation
-            local nav_k=$(( idx - showing - 1 ))
-            case "${nav_items[$nav_k]}" in
-                "↑ Up to parent"*) cur=$(dirname "$cur"); off=0; search="" ;;
-                "✕ Clear search"*) search=""; off=0 ;;
-                "🔍 Search"*) echo -ne "\n ${Y}Enter search term:${N} "; tread search; off=0 ;;
-                "↓ Next page"*) (( off += PAGE )) ;;
-                "↑ Previous page"*) (( off -= PAGE )); [[ $off -lt 0 ]] && off=0 ;;
-                "← Exit"*) return ;;
+            # === NAVIGATION ===
+            local nav_idx=$(( idx - showing - 1 ))
+            case "${nav_items[$nav_idx]}" in
+                "↑  Up to parent") cur=$(dirname "$cur"); off=0; search="" ;;
+                "✕  Clear search") search=""; off=0 ;;
+                "🔍  Search here") echo -ne "\n ${Y}Search term:${N} "; tread search; off=0 ;;
+                "↓  Next page") (( off += PAGE )) ;;
+                "↑  Previous page") (( off -= PAGE )); [[ $off -lt 0 ]] && off=0 ;;
+                "←  Exit browser") return ;;
             esac
         fi
     done
