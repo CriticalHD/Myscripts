@@ -875,14 +875,69 @@ pg_ccd() {
 }
 
 pg_tpm() {
-    banner; echo -e "  ${W}── TPM Info ─────────────────────────────────────────${N}\n"
-    for key in tpm_kernver tpm_fwver tpm_attack kernkey_vfy; do
-        printf "  ${C}%-20s${N} %s\n" "$key" "$(crossystem $key 2>/dev/null||echo n/a)"
+    banner
+    echo -e " ${W}── TPM / Security Chip Info ─────────────────────────${N}\n"
+
+    # Basic crossystem TPM values
+    echo -e " ${W}Crossystem TPM Info:${N}"
+    for key in tpm_kernver tpm_fwver tpmver; do
+        printf " ${C}%-22s${N} %s\n" "$key" "$(crossystem "$key" 2>/dev/null || echo "n/a")"
     done
-    root_available && {
-        echo -e "\n  ${D}tpm2 properties:${N}"
-        root_run "tpm2_getcap properties-fixed 2>/dev/null | head -20" | while IFS= read -r l; do echo "  $l"; done
-    }
+
+    # Security Chip Detection (Cr50 vs Ti50)
+    echo -e "\n ${W}Security Chip:${N}"
+    local tpm_chip="Unknown"
+    local chip_info=""
+
+    if command -v gsctool &>/dev/null; then
+        if gsctool -a -I 2>/dev/null | grep -q "AllowUnverifiedRo"; then
+            tpm_chip="Ti50"
+            chip_info="TPM 2.0 - Newer Titan security chip"
+        else
+            tpm_chip="Cr50 / H1"
+            chip_info="TPM 2.0 - Standard ChromeOS security chip"
+        fi
+    fi
+
+    printf " ${C}%-22s${N} %s\n" "Chip" "$tpm_chip"
+    [[ -n "$chip_info" ]] && printf " ${D}   └─ %s${N}\n" "$chip_info"
+
+    # tpmc Status (most reliable on ChromeOS)
+    if root_available && command -v tpmc &>/dev/null; then
+        echo -e "\n ${W}tpmc Status:${N}"
+        
+        sudo initctl stop trunksd >/dev/null 2>&1 || true
+        sleep 0.6
+
+        echo -e " ${C}Platform State (getp):${N}"
+        sudo tpmc getp 2>&1 | head -15 | while IFS= read -r line; do
+            echo "   $line"
+        done
+
+        echo -e "\n ${C}Volatile Flags (getvf):${N}"
+        sudo tpmc getvf 2>&1 | while IFS= read -r line; do
+            echo "   $line"
+        done
+
+        sudo initctl start trunksd >/dev/null 2>&1 || true
+    fi
+
+    # trunks_client (ChromeOS native TPM tool)
+    if root_available && command -v trunks_client &>/dev/null; then
+        echo -e "\n ${W}trunks_client Status:${N}"
+        sudo trunks_client --status 2>&1 | while IFS= read -r line; do
+            echo "   $line"
+        done
+    fi
+
+    # TPM Ownership / Status Summary
+    echo -e "\n ${W}TPM Ownership / Status:${N}"
+    if root_available && command -v trunks_client &>/dev/null; then
+        echo "   ${D}(Checked via trunks_client)${N}"
+    else
+        echo " ${D}   (Root + trunks_client recommended for full info)${N}"
+    fi
+
     pause_key
 }
 
