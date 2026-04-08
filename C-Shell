@@ -666,86 +666,100 @@ menu_diagnostics() {
 pg_crossystem_flags() {
     while true; do
         banner
-        echo -e "  ${W}── Crossystem Flags ─────────────────────────────────${N}\n"
-
-        command -v crossystem &>/dev/null || { 
-            echo "  ${R}crossystem not available.${N}"; 
-            pause_key; return; 
+        echo -e " ${W}── Crossystem Flags ─────────────────────────────────${N}\n"
+        command -v crossystem &>/dev/null || {
+            echo " ${R}crossystem not available.${N}";
+            pause_key; return;
         }
 
-        echo -e "  ${W}Loading all crossystem parameters...${N}\n"
+        echo -e " ${W}Loading all crossystem parameters...${N}\n"
 
-        # Get all parameters using sudo
+        # Get all parameters
         local params=()
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            # Extract parameter name (first word before = or space)
             if [[ "$line" =~ ^[[:space:]]*([a-zA-Z0-9_]+) ]]; then
                 params+=("${BASH_REMATCH[1]}")
             fi
         done < <(sudo crossystem 2>/dev/null)
 
         if [[ ${#params[@]} -eq 0 ]]; then
-            echo -e "  ${R}Failed to load parameters.${N}"
+            echo -e " ${R}Failed to load parameters.${N}"
             pause_key
             return
         fi
 
-        # Display numbered list
-        echo -e "  ${W}All Crossystem Flags:${N}"
-        for i in "${!params[@]}"; do
-            local key="${params[$i]}"
+        # Separate RO and RW
+        local ro_params=()
+        local rw_params=()
+
+        for key in "${params[@]}"; do
+            # Use crossystem --all to detect RO/RW (most reliable way)
+            local info=$(sudo crossystem --all 2>/dev/null | grep "^[[:space:]]*$key[[:space:]]")
+            if [[ "$info" == *"[RW/"* ]]; then
+                rw_params+=("$key")
+            else
+                ro_params+=("$key")
+            fi
+        done
+
+        # Display RO section first (info only)
+        echo -e " ${W}Read-Only (RO) Flags:${N}"
+        for key in "${ro_params[@]}"; do
+            local val=$(sudo crossystem "$key" 2>/dev/null || echo "n/a")
+            printf "    ${C}%-28s${N} ${D}%s${N}\n" "$key" "$val"
+        done
+
+        echo -e "\n ${W}Read-Write (RW) Flags:${N}"
+        for i in "${!rw_params[@]}"; do
+            local key="${rw_params[$i]}"
             local val=$(sudo crossystem "$key" 2>/dev/null || echo "n/a")
             local vc=$D
             [[ "$val" == "1" ]] && vc=$G
-            printf "  ${C}%3d)${N}  ${C}%-28s${N} ${vc}%s${N}\n" "$((i+1))" "$key" "$val"
+            printf " ${C}%3d)${N} ${C}%-28s${N} ${vc}%s${N}\n" "$((i+1))" "$key" "$val"
         done
 
-        echo -e "\n  ${D}[E] Edit a flag by number   [any other key] Back${N}"
+        echo -e "\n ${D}[E] Edit a RW flag by number [any other key] Back${N}"
         local k; tread1 k
-
         if [[ "$k" != "e" && "$k" != "E" ]]; then
             return
         fi
 
-        # Edit mode
-        if ! root_available; then 
-            echo -e "  ${R}Root is required to edit flags.${N}"
+        # Edit mode - only RW flags
+        if ! root_available; then
+            echo -e " ${R}Root is required to edit flags.${N}"
             pause_key
             continue
         fi
 
-        echo -ne "\n  ${Y}Enter number of flag to edit:${N} "
+        echo -ne "\n ${Y}Enter number of RW flag to edit:${N} "
         local num; tread num
-        [[ -z "$num" || ! "$num" =~ ^[0-9]+$ ]] && { echo -e "  ${R}Invalid number.${N}"; pause_key; continue; }
+        [[ -z "$num" || ! "$num" =~ ^[0-9]+$ ]] && { echo -e " ${R}Invalid number.${N}"; pause_key; continue; }
 
         local idx=$((num - 1))
-        if [[ $idx -lt 0 || $idx -ge ${#params[@]} ]]; then
-            echo -e "  ${R}Number out of range.${N}"
+        if [[ $idx -lt 0 || $idx -ge ${#rw_params[@]} ]]; then
+            echo -e " ${R}Number out of range.${N}"
             pause_key
             continue
         fi
 
-        local fname="${params[$idx]}"
+        local fname="${rw_params[$idx]}"
         local current=$(sudo crossystem "$fname" 2>/dev/null || echo "n/a")
-
-        echo -e "  Selected: ${C}${fname}${N} = ${current}"
-        echo -ne "  ${Y}New value (usually 0 or 1, or leave empty to cancel):${N} "
+        echo -e " Selected: ${C}${fname}${N} = ${current}"
+        echo -ne " ${Y}New value (usually 0 or 1, or leave empty to cancel):${N} "
         local fval; tread fval
 
         if [[ -z "$fval" ]]; then
-            echo -e "  ${Y}Cancelled.${N}"
+            echo -e " ${Y}Cancelled.${N}"
             pause_key
             continue
         fi
 
-        # Try to set it (sudo crossystem)
-        echo -e "\n  ${W}Setting ${fname}=${fval} ...${N}"
-        sudo crossystem "${fname}=${fval}" 2>&1 | while IFS= read -r l; do echo "  $l"; done
+        echo -e "\n ${W}Setting ${fname}=${fval} ...${N}"
+        sudo crossystem "${fname}=${fval}" 2>&1 | while IFS= read -r l; do echo " $l"; done
 
         local newval=$(sudo crossystem "$fname" 2>/dev/null || echo "n/a")
-        echo -e "  ${G}Result: ${fname} = ${newval}${N}"
-
+        echo -e " ${G}Result: ${fname} = ${newval}${N}"
         pause_key
     done
 }
