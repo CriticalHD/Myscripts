@@ -1039,7 +1039,7 @@ pg_tpm() {
 pg_firmware_info() {
     banner; echo -e "  ${W}── Firmware Info ────────────────────────────────────${N}\n"
     echo -e "  ${W}Firmware versions:${N}"
-    for key in fwid ro_fwid mainfw_act mainfw_type tried_fwb; do
+    for key in fwid ro_fwid mainfw_act mainfw_type fw_tried; do
         local val; val=$(crossystem $key 2>/dev/null)
         [[ -n "$val" ]] && printf "  ${C}%-24s${N} %s\n" "$key" "$val"
     done
