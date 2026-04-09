@@ -1621,7 +1621,7 @@ pg_credits() {
     echo -e "  ${G}  Sucrose${N}          github.com/shadowed1/Sucrose"
     echo -e "  ${D}  sudo via mkfifo${N}\n"
     echo -e "  ${G}  velzie${N}           Original minioverride guide\n"
-    echo -e "  ${D}Built with Claude -- claude.ai${N}"
+    echo -e "  ${D}Assisted using Claude${N}"
     pause_key
 }
 
