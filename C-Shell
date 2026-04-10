@@ -804,7 +804,7 @@ pg_gbb() {
     if root_available; then
         local raw=""
         raw=$(root_run "futility gbb -g --flash --flags 2>/dev/null" 2>/dev/null \
-            | tr -d '\r' | grep -i 'flags:' | grep -oP '0x[0-9A-Fa-f]+' | tail -1)
+            | tr -d '\r' | grep '^flags:' | grep -oP '0x[0-9A-Fa-f]+' | tail -1)
         if [[ -n "$raw" ]]; then
             current_hex="$raw"
             selected=$(printf '%d' "$raw")
@@ -813,7 +813,7 @@ pg_gbb() {
 
     _gbb_draw() {
         tput cup 0 0
-        _gbb_banner
+        banner
         echo -e " ${W}── GBB Flags Editor ────────────────────────────────${N}"
         echo -e " ${C}Flags on device : ${W}${current_hex}${N}                    "
         echo -e " ${C}Selected value  : ${W}$(printf '0x%08X' "$selected")${N}    "
