@@ -790,14 +790,16 @@ pg_gbb() {
         "ENABLE_UDC|0x00010000|Enable USB Device Controller"
         "FORCE_CSE_SYNC|0x00020000|Force CSE sync always"
     )
-
+ 
     local total=${#FLAGS[@]}
     local cursor=0
     local selected=0
     local current_hex="(unavailable)"
     local flash_status=""
-    local first_draw=1
-
+ 
+    # hide cursor for clean UI
+    printf '\033[?25l'
+ 
     # ── Read current flags from device
     if root_available; then
         local raw=""
@@ -809,21 +811,14 @@ pg_gbb() {
         fi
     fi
 
-    # ── Draw (full clear on first, in-place on subsequent)
-_gbb_draw() {
-        if (( first_draw )); then
-            clear
-            first_draw=0
-        else
-            tput cup 0 0
-        fi
-
-        banner
+    _gbb_draw() {
+        tput cup 0 0
+        _gbb_banner
         echo -e " ${W}── GBB Flags Editor ────────────────────────────────${N}"
         echo -e " ${C}Flags on device : ${W}${current_hex}${N}                    "
         echo -e " ${C}Selected value  : ${W}$(printf '0x%08X' "$selected")${N}    "
         echo
-
+ 
         for (( i=0; i<total; i++ )); do
             IFS='|' read -r name mask desc <<< "${FLAGS[$i]}"
             local bit; bit=$(printf '%d' "$mask")
@@ -839,21 +834,21 @@ _gbb_draw() {
                 echo -e "    ${box} ${nc}$(printf '%-34s' "$name")${N} ${D}${desc}${N}          "
             fi
         done
-
+ 
         echo
         echo -e " ${D}──────────────────────────────────────────────────────${N}"
         echo -e " ${D}↑↓${N} Move  ${D}Enter${N} Toggle  ${D}R${N} Recommended (0x80B1)  ${D}S${N} Flash  ${D}Q${N} Quit   "
         printf ' %-60s\n' "$flash_status"
     }
-
-    # ── Read a single keypress (handles ANSI arrows)
+ 
+    # ── Read a single keypress
     _gbb_readkey() {
         local key esc
-        IFS= read -r -s -n1 key
+        IFS= read -r -s -n1 key </dev/tty
         if [[ "$key" == $'\x1b' ]]; then
-            IFS= read -r -s -n1 -t0.1 esc
+            IFS= read -r -s -n1 -t0.1 esc </dev/tty
             if [[ "$esc" == '[' ]]; then
-                IFS= read -r -s -n1 -t0.1 key
+                IFS= read -r -s -n1 -t0.1 key </dev/tty
                 case "$key" in
                     A) echo "UP"   ;;
                     B) echo "DOWN" ;;
@@ -864,36 +859,44 @@ _gbb_draw() {
         fi
         echo "$key"
     }
-
+ 
+    # initial clear + draw
+    clear
+    _gbb_draw
+ 
     # ── Main loop
     while true; do
-        _gbb_draw
         local key; key=$(_gbb_readkey)
-
+ 
         case "$key" in
             UP)
                 (( cursor-- ))
                 (( cursor < 0 )) && cursor=$(( total - 1 ))
                 flash_status=""
+                _gbb_draw
                 ;;
             DOWN)
                 (( cursor++ ))
                 (( cursor >= total )) && cursor=0
                 flash_status=""
+                _gbb_draw
                 ;;
             "")
                 IFS='|' read -r _ mask _ <<< "${FLAGS[$cursor]}"
                 local bit; bit=$(printf '%d' "$mask")
                 selected=$(( selected ^ bit ))
                 flash_status=""
+                _gbb_draw
                 ;;
             r|R)
                 selected=$(printf '%d' '0x80B1')
                 flash_status="${C}Preset applied: 0x000080B1${N}"
+                _gbb_draw
                 ;;
             s|S)
                 if ! root_available; then
                     flash_status="${R}✗ Root required to flash GBB flags.${N}"
+                    _gbb_draw
                     continue
                 fi
                 local final_hex; final_hex=$(printf '0x%08X' "$selected")
@@ -907,8 +910,10 @@ _gbb_draw() {
                 else
                     flash_status="${R}✗ Flash failed: ${out}${N}"
                 fi
+                _gbb_draw
                 ;;
             q|Q)
+                printf '\033[?25h'
                 clear
                 return
                 ;;
