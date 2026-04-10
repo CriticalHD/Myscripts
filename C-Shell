@@ -1,5 +1,5 @@
 #!/bin/bash
-# cshell v7 — Custom ChromeOS Shell
+# cshell v7.1 — Custom ChromeOS Shell
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -15,7 +15,7 @@ ROOTFS_SHELL="/usr/bin/cshell_rootfs"
 INIT_SCRIPT="/etc/init/cshell-restore.conf"
 UI_CONF="/etc/init/ui.conf"
 OVERRIDE_SO="/usr/local/bin/minioverride.so"
-VERSION="7"
+VERSION="7.1"
 UPDATE_URL="https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/C-Shell"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
@@ -802,7 +802,7 @@ pg_gbb() {
     if root_available; then
         local raw=""
         raw=$(root_run "futility gbb -g --flash --flags 2>/dev/null" 2>/dev/null \
-            | tr -d '\r' | grep -oP '0x[0-9A-Fa-f]+' | tail -1)
+            | tr -d '\r' | grep -i 'flags:' | grep -oP '0x[0-9A-Fa-f]+' | tail -1)
         if [[ -n "$raw" ]]; then
             current_hex="$raw"
             selected=$(printf '%d' "$raw")
@@ -814,11 +814,11 @@ _gbb_draw() {
         if (( first_draw )); then
             clear
             first_draw=0
-            banner
         else
             tput cup 0 0
         fi
 
+        banner
         echo -e " ${W}── GBB Flags Editor ────────────────────────────────${N}"
         echo -e " ${C}Flags on device : ${W}${current_hex}${N}                    "
         echo -e " ${C}Selected value  : ${W}$(printf '0x%08X' "$selected")${N}    "
