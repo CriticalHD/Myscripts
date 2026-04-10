@@ -799,28 +799,26 @@ pg_gbb() {
     local first_draw=1
 
     # ── Read current flags from device
-if root_available; then
-    local raw=""
-    root_run "flashrom -p internal -i GBB -r /tmp/gbb" >/dev/null 2>&1
-    raw=$(root_run "futility gbb --flash -g --flags /tmp/gbb 2>/dev/null" 2>/dev/null \
-        | grep -oP '0x[0-9A-Fa-f]+' | tail -1)
-    root_run "rm -f /tmp/gbb" 2>/dev/null
-    if [[ -n "$raw" ]]; then
-        current_hex="$raw"
-        selected=$(printf '%d' "$raw")
+    if root_available; then
+        local raw=""
+        raw=$(root_run "futility gbb -g --flash --flags 2>/dev/null" 2>/dev/null \
+            | tr -d '\r' | grep -oP '0x[0-9A-Fa-f]+' | tail -1)
+        if [[ -n "$raw" ]]; then
+            current_hex="$raw"
+            selected=$(printf '%d' "$raw")
+        fi
     fi
-fi
 
     # ── Draw (full clear on first, in-place on subsequent)
-    _gbb_draw() {
+_gbb_draw() {
         if (( first_draw )); then
             clear
             first_draw=0
+            banner
         else
             tput cup 0 0
         fi
 
-        banner
         echo -e " ${W}── GBB Flags Editor ────────────────────────────────${N}"
         echo -e " ${C}Flags on device : ${W}${current_hex}${N}                    "
         echo -e " ${C}Selected value  : ${W}$(printf '0x%08X' "$selected")${N}    "
@@ -845,7 +843,6 @@ fi
         echo
         echo -e " ${D}──────────────────────────────────────────────────────${N}"
         echo -e " ${D}↑↓${N} Move  ${D}Enter${N} Toggle  ${D}R${N} Recommended (0x80B1)  ${D}S${N} Flash  ${D}Q${N} Quit   "
-        # Always print status line (blank when empty, to overwrite stale text)
         printf ' %-60s\n' "$flash_status"
     }
 
@@ -903,7 +900,7 @@ fi
                 flash_status="${Y}Flashing ${final_hex} …${N}"
                 _gbb_draw
                 local out
-                out=$(root_run "futility gbb --flash --set --flags=${final_hex}" 2>&1)
+                out=$(root_run "futility gbb -s --flash --flags=${final_hex} 2>&1" 2>&1)
                 if [[ $? -eq 0 ]]; then
                     current_hex="$final_hex"
                     flash_status="${G}✓ GBB flags written: ${final_hex}${N}"
