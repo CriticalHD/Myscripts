@@ -1,5 +1,5 @@
 #!/bin/bash
-# cshell v7.3 — Custom ChromeOS Shell
+# cshell v7.4 — Custom ChromeOS Shell
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -15,7 +15,7 @@ ROOTFS_SHELL="/usr/bin/cshell_rootfs"
 INIT_SCRIPT="/etc/init/cshell-restore.conf"
 UI_CONF="/etc/init/ui.conf"
 OVERRIDE_SO="/usr/local/bin/minioverride.so"
-VERSION="7.3"
+VERSION="7.4"
 UPDATE_URL="https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/C-Shell"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
@@ -816,7 +816,7 @@ pg_gbb() {
         banner
         echo -e " ${W}── GBB Flags Editor ────────────────────────────────${N}"
         echo -e " ${C}Flags on device : ${W}${current_hex}${N}                    "
-        echo -e " ${C}Selected value  : ${W}$(printf '0x%08X' "$selected")${N}    "
+        echo -e " ${C}Selected value  : ${W}$(printf '0x%08x' "$selected")${N}    "
         echo
  
         for (( i=0; i<total; i++ )); do
@@ -838,7 +838,7 @@ pg_gbb() {
         echo
         echo -e " ${D}──────────────────────────────────────────────────────${N}"
         echo -e " ${D}↑↓${N} Move  ${D}Enter${N} Toggle  ${D}R${N} Recommended (0x80B1)  ${D}S${N} Flash  ${D}Q${N} Quit   "
-        printf ' %-60s\n' "$flash_status"
+        echo -e " $(printf '%-60s' "$flash_status")"
     }
  
     # ── Read a single keypress
