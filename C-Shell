@@ -1,5 +1,5 @@
 #!/bin/bash
-# cshell v7.4 — Custom ChromeOS Shell
+# cshell v7.5 — Custom ChromeOS Shell
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -15,7 +15,7 @@ ROOTFS_SHELL="/usr/bin/cshell_rootfs"
 INIT_SCRIPT="/etc/init/cshell-restore.conf"
 UI_CONF="/etc/init/ui.conf"
 OVERRIDE_SO="/usr/local/bin/minioverride.so"
-VERSION="7.4"
+VERSION="7.5"
 UPDATE_URL="https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/C-Shell"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
@@ -549,8 +549,21 @@ pg_battery() {
         [[ -n "$v"  ]] && echo -e "  ${C}Voltage:${N} $(awk "BEGIN{printf \"%.3f V\",$v/1000000}")"
         [[ -n "$i"  ]] && echo -e "  ${C}Draw:${N}    $(awk "BEGIN{printf \"%.0f mA\",$i/1000}")"
     fi
-    root_available && { echo -e "\n  ${D}ectool:${N}"
-        root_run "ectool batterystatus 2>/dev/null" | while IFS= read -r l; do echo "  $l"; done; }
+    if root_available; then
+        echo -e "\n  ${D}ectool battery:${N}"
+        local ectool_out; ectool_out=$(root_run "ectool battery" 2>/dev/null)
+        echo "$ectool_out" | while IFS= read -r l; do echo "  $l"; done
+        local lfc dc
+        lfc=$(echo "$ectool_out" | grep -i 'last full charge' | grep -o '[0-9]*' | head -1)
+        dc=$(echo "$ectool_out" | grep -i 'design capacity' | grep -o '[0-9]*' | head -1)
+        if [[ -n "$lfc" && -n "$dc" && "$dc" -gt 0 ]]; then
+            local health; health=$(awk "BEGIN{printf \"%.1f\",($lfc/$dc)*100}")
+            local hc=$G
+            awk "BEGIN{exit !($health+0<80)}" 2>/dev/null && hc=$Y
+            awk "BEGIN{exit !($health+0<60)}" 2>/dev/null && hc=$R
+            echo -e "\n  ${C}Battery Health:${N} ${hc}${health}%${N}"
+        fi
+    fi
     pause_key
 }
 
