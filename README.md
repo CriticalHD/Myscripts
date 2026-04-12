@@ -20,6 +20,6 @@ Server Auto Update Blocker | works until next recovery
 ````curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/SAUB | sudo bash````
 
 ## Custom Shell
-Implements my custom shell, contains auto root (you can use crosh as root instead of always using vt2), has developer tools modifications (gbb flags selector, etc)
+Implements my custom shell, contains auto root (you can use crosh as root instead of always using vt2), has developer tools modifications (gbb flags selector, etc) REQUIRES ROOTFS VERIFICATION DISABLED
 
 ````curl -sSL https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/C-Shell | sudo bash````
