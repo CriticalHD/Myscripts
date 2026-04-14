@@ -1,5 +1,5 @@
 #!/bin/bash
-# cshell v8.2 — Custom ChromeOS Shell
+# cshell v8.3 — Custom ChromeOS Shell
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -15,7 +15,7 @@ ROOTFS_SHELL="/usr/bin/cshell_rootfs"
 INIT_SCRIPT="/etc/init/cshell-restore.conf"
 UI_CONF="/etc/init/ui.conf"
 OVERRIDE_SO="/usr/local/bin/minioverride.so"
-VERSION="8.2"
+VERSION="8.3"
 UPDATE_URL="https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/C-Shell"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
@@ -1311,7 +1311,6 @@ pg_file_browser() {
     local cur="${1:-/}" search="" off=0 PAGE=19
 
     while true; do
-        # FORCE CLEAR - very important in Crosh
         printf '\033[2J\033[H\033[?25l'
 
         local ls_cmd="ls -1p"
@@ -1346,6 +1345,13 @@ pg_file_browser() {
         done < <($ls_cmd "$cur" 2>/dev/null | sed 's/\/$//' | sort)
 
         local total=${#all[@]}
+        if (( total == 0 )); then
+            echo -e " ${R}Empty or access denied.${N}"
+            pause_key
+            printf '\033[?25h'
+            return
+        fi
+
         local page_items=()
         for (( i=off; i < off+PAGE && i < total; i++ )); do
             page_items+=("${all[i]}")
@@ -1363,7 +1369,6 @@ pg_file_browser() {
         local pg="$((off+1))-$((off+PAGE < total ? off+PAGE : total))/${total}"
         [[ -n "$search" ]] && pg="${pg} [${search}]"
 
-        # DRAW
         draw_menu "File Browser → ${cur}  [${pg}]" \
             "${page_items[@]}" \
             "────────────────────────────────────" \
@@ -1387,9 +1392,11 @@ pg_file_browser() {
                 continue
             fi
 
+            # === FILE ACTIONS ===
             banner
             echo -e " ${W}File:${N} ${fullpath}\n"
-            local opts=("📜 Tail -50" "📜 Head -50" "✏ Edit" "ℹ Info" "📋 Copy path" "🗑 Delete" "← Back")
+
+            local opts=("📜 Tail -50" "📜 Head -50" "✏ Edit with Nano" "ℹ Info" "📋 Copy path" "🗑 Delete" "← Back")
             draw_menu "${item_name}" "${opts[@]}"
             local act=$MENU_RESULT
             [[ $act -eq -1 || $act -eq 6 ]] && continue
@@ -1397,7 +1404,15 @@ pg_file_browser() {
             case $act in
                 0) banner; sudo tail -n 50 "$fullpath" 2>/dev/null | cat; pause_key ;;
                 1) banner; sudo head -n 50 "$fullpath" 2>/dev/null | cat; pause_key ;;
-                2) root_available && root_run "nano '$fullpath' || vi '$fullpath'" || { sudo nano "$fullpath" || sudo vi "$fullpath"; } ;;
+                2) 
+                    # Use Nano (preferred)
+                    if command -v nano >/dev/null; then
+                        sudo nano "$fullpath"
+                    else
+                        echo -e " ${R}Nano not found. Trying vi...${N}"
+                        sudo vi "$fullpath"
+                    fi
+                    ;;
                 3) banner; sudo ls -l "$fullpath"; sudo file "$fullpath"; pause_key ;;
                 4) echo -e "\n${fullpath}"; pause_key ;;
                 5) confirm_yn "Delete ${item_name}?" && root_run "rm -f '$fullpath'" && echo "Deleted."; pause_key ;;
@@ -1409,7 +1424,7 @@ pg_file_browser() {
                 "↑  Up to parent") cur=$(dirname "$cur"); off=0; search="" ;;
                 "✕  Clear search") search=""; off=0 ;;
                 "🔍  Search here") echo -ne "\n ${Y}Search:${N} "; tread search; off=0 ;;
-                "↓  Next page") (( off += PAGE )) ;;
+                "↓  Next page") (( off += PAGE )); [[ $off -ge $total ]] && off=0 ;;
                 "↑  Previous page") (( off -= PAGE )); [[ $off -lt 0 ]] && off=0 ;;
                 "←  Exit browser") printf '\033[?25h'; return ;;
             esac
