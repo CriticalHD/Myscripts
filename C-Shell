@@ -1,5 +1,5 @@
 #!/bin/bash
-# cshell v7.8 — Custom ChromeOS Shell
+# cshell v7.9 — Custom ChromeOS Shell
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -15,7 +15,7 @@ ROOTFS_SHELL="/usr/bin/cshell_rootfs"
 INIT_SCRIPT="/etc/init/cshell-restore.conf"
 UI_CONF="/etc/init/ui.conf"
 OVERRIDE_SO="/usr/local/bin/minioverride.so"
-VERSION="7.8"
+VERSION="7.9"
 UPDATE_URL="https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/C-Shell"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
@@ -1308,56 +1308,67 @@ menu_system_mgmt() {
 #  FILE BROWSER — paginated, search, execute .sh, no duplication
 # ════════════════════════════════════════════════════════════════
 pg_file_browser() {
-    local cur="${1:-/}" search="" off=0 PAGE=15
+    local cur="${1:-/}" search="" off=0 PAGE=14
 
     while true; do
-        # Simple clear that works better in Crosh
         printf '\033[2J\033[H'
 
-        # Build list
+        # Use sudo ls when needed
+        local ls_cmd="ls -1p"
+        [[ "$cur" == /root* || "$cur" == /sys* || "$cur" == /proc* || "$cur" == /dev* ]] && ls_cmd="sudo ls -1p"
+
         local all=()
         while IFS= read -r name; do
             [[ -z "$name" ]] && continue
             [[ -n "$search" ]] && { echo "$name" | grep -qi "$search" || continue; }
 
             local fp="${cur%/}/${name}"
+
             if [[ -d "$fp" ]]; then
                 all+=("📁 ${name}/")
             elif [[ -f "$fp" ]]; then
-                all+=("📄 ${name}")
+                local sz=$(sudo du -sh "$fp" 2>/dev/null | cut -f1 || echo "?")
+                local ext="${name##*.}"
+                ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
+
+                case "$ext" in
+                    sh|bash|py|pl|rb)     all+=("▶ ${name} (${sz})") ;;
+                    txt|log|conf|cfg|md)  all+=("📝 ${name} (${sz})") ;;
+                    png|jpg|jpeg|gif|bmp) all+=("🖼 ${name} (${sz})") ;;
+                    mp4|webm|mkv|avi)     all+=("🎥 ${name} (${sz})") ;;
+                    mp3|wav|ogg)          all+=("🎵 ${name} (${sz})") ;;
+                    bin|elf)              all+=("⚙ ${name} (${sz})") ;;
+                    *)                    all+=("📄 ${name} (${sz})") ;;
+                esac
             else
                 all+=("❓ ${name}")
             fi
-        done < <(ls -1p "$cur" 2>/dev/null | sed 's/\/$//' | sort)
+        done < <($ls_cmd "$cur" 2>/dev/null | sed 's/\/$//' | sort)
 
         local total=${#all[@]}
         if (( total == 0 )); then
-            echo "Empty directory."
+            echo -e " ${R}Empty or permission denied.${N}"
             pause_key
             return
         fi
 
-        # Page items
         local page_items=()
-        local i
         for (( i=off; i < off+PAGE && i < total; i++ )); do
             page_items+=("${all[i]}")
         done
 
         local showing=${#page_items[@]}
 
-        # Navigation
         local nav=()
         [[ "$cur" != "/" ]] && nav+=("↑  Up to parent")
         [[ -n "$search" ]] && nav+=("✕  Clear search") || nav+=("🔍  Search here")
-        (( off + PAGE < total )) && nav+=("↓  Next page")
+        (( off + PAGE < total )) && nav+=("↓  Next page ($((total - off - PAGE)) left)")
         (( off > 0 )) && nav+=("↑  Previous page")
         nav+=("←  Exit browser")
 
         local pg="$((off+1))-$((off+PAGE < total ? off+PAGE : total))/${total}"
         [[ -n "$search" ]] && pg="${pg} [${search}]"
 
-        # Draw
         draw_menu "File Browser → ${cur}  [${pg}]" \
             "${page_items[@]}" \
             "────────────────────────────────────" \
@@ -1368,33 +1379,44 @@ pg_file_browser() {
         local idx=$MENU_RESULT
 
         if (( idx < showing )); then
-            # Item selected
             local chosen="${page_items[$idx]}"
-            local item="${chosen:2}"
-            item="${item%/}"
-            local full="${cur%/}/${item}"
+            local item_name="${chosen:2}"
+            item_name="${item_name% (*}"
+            item_name="${item_name%/}"
+            local fullpath="${cur%/}/${item_name}"
 
-            if [[ -d "$full" ]]; then
-                cur="$full"
+            if [[ -d "$fullpath" ]]; then
+                cur="$fullpath"
                 off=0
                 search=""
                 continue
             fi
 
-            echo -e "\nSelected: ${full}"
-            pause_key
+            # File actions
+            banner
+            echo -e " ${W}File:${N} ${fullpath}\n"
+
+            local opts=("📜 Tail -50" "📜 Head -50" "✏ Edit" "ℹ Info" "📋 Copy path" "🗑 Delete" "← Back")
+            draw_menu "${item_name}" "${opts[@]}"
+            local act=$MENU_RESULT
+            [[ $act -eq -1 || $act -eq 6 ]] && continue
+
+            case $act in
+                0) banner; sudo tail -n 50 "$fullpath" 2>/dev/null | cat; pause_key ;;
+                1) banner; sudo head -n 50 "$fullpath" 2>/dev/null | cat; pause_key ;;
+                2) root_available && root_run "nano '$fullpath' || vi '$fullpath'" || { sudo nano "$fullpath" || sudo vi "$fullpath"; } ;;
+                3) banner; sudo ls -l "$fullpath"; sudo file "$fullpath"; pause_key ;;
+                4) echo -e "\n${fullpath}"; pause_key ;;
+                5) confirm_yn "Delete ${item_name}?" && root_run "rm -f '$fullpath'" && echo "Deleted."; pause_key ;;
+            esac
 
         else
-            # Navigation
             local nidx=$(( idx - showing - 1 ))
             case "${nav[$nidx]}" in
                 "↑  Up to parent") cur=$(dirname "$cur"); off=0; search="" ;;
                 "✕  Clear search") search=""; off=0 ;;
-                "🔍  Search here") 
-                    echo -ne "\nSearch: "
-                    tread search
-                    off=0 ;;
-                "↓  Next page") (( off += PAGE )); [[ $off -ge $total ]] && off=0 ;;
+                "🔍  Search here") echo -ne "\n ${Y}Search:${N} "; tread search; off=0 ;;
+                "↓  Next page") (( off += PAGE )) ;;
                 "↑  Previous page") (( off -= PAGE )); [[ $off -lt 0 ]] && off=0 ;;
                 "←  Exit browser") return ;;
             esac
