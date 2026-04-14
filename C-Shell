@@ -1,5 +1,5 @@
 #!/bin/bash
-# cshell v8 — Custom ChromeOS Shell
+# cshell v8.1 — Custom ChromeOS Shell
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -15,7 +15,7 @@ ROOTFS_SHELL="/usr/bin/cshell_rootfs"
 INIT_SCRIPT="/etc/init/cshell-restore.conf"
 UI_CONF="/etc/init/ui.conf"
 OVERRIDE_SO="/usr/local/bin/minioverride.so"
-VERSION="8"
+VERSION="8.1"
 UPDATE_URL="https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/C-Shell"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
@@ -1311,9 +1311,10 @@ pg_file_browser() {
     local cur="${1:-/}" search="" off=0 PAGE=19
 
     while true; do
-        printf '\033[2J\033[H'
+        # Extra strong clear for Crosh
+        printf '\033[2J\033[H\033[?25l'
 
-        # sudo for restricted directories
+        # sudo ls for protected folders
         local ls_cmd="ls -1p"
         [[ "$cur" == /root* || "$cur" == /sys* || "$cur" == /proc* || "$cur" == /dev* ]] && ls_cmd="sudo ls -1p"
 
@@ -1349,6 +1350,7 @@ pg_file_browser() {
         if (( total == 0 )); then
             echo -e " ${R}Empty or access denied.${N}"
             pause_key
+            printf '\033[?25h'  # show cursor
             return
         fi
 
@@ -1369,16 +1371,18 @@ pg_file_browser() {
         local pg="$((off+1))-$((off+PAGE < total ? off+PAGE : total))/${total}"
         [[ -n "$search" ]] && pg="${pg} [${search}]"
 
+        # Call draw_menu
         draw_menu "File Browser → ${cur}  [${pg}]" \
             "${page_items[@]}" \
             "────────────────────────────────────" \
             "${nav[@]}"
 
-        [[ $MENU_RESULT -eq -1 ]] && return
+        [[ $MENU_RESULT -eq -1 ]] && { printf '\033[?25h'; return; }
 
         local idx=$MENU_RESULT
 
         if (( idx < showing )); then
+            # File/Folder selected
             local chosen="${page_items[$idx]}"
             local item_name="${chosen:2}"
             item_name="${item_name% (*}"
@@ -1392,9 +1396,9 @@ pg_file_browser() {
                 continue
             fi
 
+            # File actions (same as before)
             banner
             echo -e " ${W}File:${N} ${fullpath}\n"
-
             local opts=("📜 Tail -50" "📜 Head -50" "✏ Edit" "ℹ Info" "📋 Copy path" "🗑 Delete" "← Back")
             draw_menu "${item_name}" "${opts[@]}"
             local act=$MENU_RESULT
@@ -1410,14 +1414,15 @@ pg_file_browser() {
             esac
 
         else
+            # Navigation
             local nidx=$(( idx - showing - 1 ))
             case "${nav[$nidx]}" in
                 "↑  Up to parent") cur=$(dirname "$cur"); off=0; search="" ;;
                 "✕  Clear search") search=""; off=0 ;;
                 "🔍  Search here") echo -ne "\n ${Y}Search:${N} "; tread search; off=0 ;;
-                "↓  Next page") (( off += PAGE )) ;;
+                "↓  Next page") (( off += PAGE )); if (( off >= total )); then off=0; fi ;;
                 "↑  Previous page") (( off -= PAGE )); [[ $off -lt 0 ]] && off=0 ;;
-                "←  Exit browser") return ;;
+                "←  Exit browser") printf '\033[?25h'; return ;;
             esac
         fi
     done
