@@ -1,5 +1,5 @@
 #!/bin/bash
-# cshell v7.7 — Custom ChromeOS Shell
+# cshell v7.8 — Custom ChromeOS Shell
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -15,7 +15,7 @@ ROOTFS_SHELL="/usr/bin/cshell_rootfs"
 INIT_SCRIPT="/etc/init/cshell-restore.conf"
 UI_CONF="/etc/init/ui.conf"
 OVERRIDE_SO="/usr/local/bin/minioverride.so"
-VERSION="7.7"
+VERSION="7.8"
 UPDATE_URL="https://raw.githubusercontent.com/CriticalHD/Myscripts/refs/heads/main/C-Shell"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'
@@ -1308,36 +1308,36 @@ menu_system_mgmt() {
 #  FILE BROWSER — paginated, search, execute .sh, no duplication
 # ════════════════════════════════════════════════════════════════
 pg_file_browser() {
-    local cur="${1:-/}" search="" off=0
-    local PAGE
+    local cur="${1:-/}" search="" off=0 PAGE=15
 
     while true; do
-        # Dynamic page size
-        PAGE=$(( $(tput lines 2>/dev/null || echo 25) - 13 ))
-        (( PAGE < 10 )) && PAGE=10
+        # Simple clear that works better in Crosh
+        printf '\033[2J\033[H'
 
-        # Build file list - FIXED VERSION
+        # Build list
         local all=()
-        while IFS= read -r name || [[ -n "$name" ]]; do
+        while IFS= read -r name; do
             [[ -z "$name" ]] && continue
-
             [[ -n "$search" ]] && { echo "$name" | grep -qi "$search" || continue; }
 
             local fp="${cur%/}/${name}"
-
             if [[ -d "$fp" ]]; then
                 all+=("📁 ${name}/")
             elif [[ -f "$fp" ]]; then
-                local sz=$(du -sh "$fp" 2>/dev/null | cut -f1)
-                all+=("📄 ${name} ${sz:+(${sz})}")
+                all+=("📄 ${name}")
             else
                 all+=("❓ ${name}")
             fi
         done < <(ls -1p "$cur" 2>/dev/null | sed 's/\/$//' | sort)
 
         local total=${#all[@]}
+        if (( total == 0 )); then
+            echo "Empty directory."
+            pause_key
+            return
+        fi
 
-        # Current page
+        # Page items
         local page_items=()
         local i
         for (( i=off; i < off+PAGE && i < total; i++ )); do
@@ -1347,51 +1347,54 @@ pg_file_browser() {
         local showing=${#page_items[@]}
 
         # Navigation
-        local nav_items=()
-        [[ "$cur" != "/" ]] && nav_items+=("↑  Up to parent")
-        [[ -n "$search" ]] && nav_items+=("✕  Clear search") || nav_items+=("🔍  Search here")
-        (( off + PAGE < total )) && nav_items+=("↓  Next page ($((total - off - PAGE)) left)")
-        (( off > 0 )) && nav_items+=("↑  Previous page")
-        nav_items+=("←  Exit browser")
+        local nav=()
+        [[ "$cur" != "/" ]] && nav+=("↑  Up to parent")
+        [[ -n "$search" ]] && nav+=("✕  Clear search") || nav+=("🔍  Search here")
+        (( off + PAGE < total )) && nav+=("↓  Next page")
+        (( off > 0 )) && nav+=("↑  Previous page")
+        nav+=("←  Exit browser")
 
         local pg="$((off+1))-$((off+PAGE < total ? off+PAGE : total))/${total}"
         [[ -n "$search" ]] && pg="${pg} [${search}]"
 
-        local all_items=("${page_items[@]}" "────────────────────────────────────" "${nav_items[@]}")
-
-        # Stronger clear (fixes duplication/glitch)
-        printf '\033[2J\033[H'
-        draw_menu "File Browser → ${cur}  [${pg}]" "${all_items[@]}"
+        # Draw
+        draw_menu "File Browser → ${cur}  [${pg}]" \
+            "${page_items[@]}" \
+            "────────────────────────────────────" \
+            "${nav[@]}"
 
         [[ $MENU_RESULT -eq -1 ]] && return
 
         local idx=$MENU_RESULT
 
         if (( idx < showing )); then
-            # File/Folder selected
+            # Item selected
             local chosen="${page_items[$idx]}"
-            local item_name="${chosen:2}"
-            item_name="${item_name%/}"
-            local fullpath="${cur%/}/${item_name}"
+            local item="${chosen:2}"
+            item="${item%/}"
+            local full="${cur%/}/${item}"
 
-            if [[ -d "$fullpath" ]]; then
-                cur="$fullpath"
+            if [[ -d "$full" ]]; then
+                cur="$full"
                 off=0
                 search=""
                 continue
             fi
 
-            # ... (your file actions code stays the same)
-            # I'll skip repeating it unless you want changes
+            echo -e "\nSelected: ${full}"
+            pause_key
 
         else
             # Navigation
-            local nav_idx=$(( idx - showing - 1 ))
-            case "${nav_items[$nav_idx]}" in
+            local nidx=$(( idx - showing - 1 ))
+            case "${nav[$nidx]}" in
                 "↑  Up to parent") cur=$(dirname "$cur"); off=0; search="" ;;
                 "✕  Clear search") search=""; off=0 ;;
-                "🔍  Search here") echo -ne "\n ${Y}Search term:${N} "; tread search; off=0 ;;
-                "↓  Next page") (( off += PAGE )) ;;
+                "🔍  Search here") 
+                    echo -ne "\nSearch: "
+                    tread search
+                    off=0 ;;
+                "↓  Next page") (( off += PAGE )); [[ $off -ge $total ]] && off=0 ;;
                 "↑  Previous page") (( off -= PAGE )); [[ $off -lt 0 ]] && off=0 ;;
                 "←  Exit browser") return ;;
             esac
